@@ -6,7 +6,10 @@ pub mod cli;
 
 pub use cli::{check_executables, parse_args, CliArgs};
 pub use error::Result;
-use std::fs;
+use std::{
+    fs::{self, File},
+    process::{Command, Stdio},
+};
 
 // the entry point for the whole program
 pub fn pipeline() -> Result<()> {
@@ -29,6 +32,7 @@ pub fn pipeline() -> Result<()> {
 // 1. intermediate
 // 2. results
 // 3. pipeline_scripts
+// 4. data
 fn set_up_filesystem(matches: CliArgs) -> Result<()> {
     let mut configure = matches.configure;
 
@@ -61,6 +65,53 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
         fs::write(configure.clone(), code)?;
         configure.pop();
     }
+
+    // now deal with the data
+    configure.pop();
+    configure.push("data");
+    fs::create_dir_all(configure.clone())?;
+
+    // check the ending of the file.
+    match matches.fasta_file.to_string_lossy().ends_with("gz") {
+        true => {
+            // the final component of the fasta file name here
+            let base_fasta_name = matches.fasta_file.file_name().unwrap();
+            let fasta_name = base_fasta_name.to_string_lossy();
+            // FIXME: the following line will panic if the file is mal-formatted
+            let new_fasta_name = fasta_name.strip_suffix(".gz").unwrap();
+
+            configure.push(new_fasta_name);
+            // add the new command here
+            let gunzip_process = Command::new("gunzip")
+                .arg("-c")
+                .arg(matches.fasta_file.clone())
+                .stdout(Stdio::piped())
+                .spawn()?;
+
+            // little bit of wizardry here
+            // see https://stackoverflow.com/questions/43949612/redirect-output-of-child-process-spawned-from-rust
+            // as > cannot be used in Command.
+            let mut f = File::create(&configure)?;
+
+            std::io::copy(&mut gunzip_process.stdout.unwrap(), &mut f)?;
+        }
+        false => {
+            // else use cp
+            let base_fasta_name = matches.fasta_file.file_name().unwrap();
+            configure.push(base_fasta_name);
+            Command::new("cp")
+                .arg("-r")
+                .arg(matches.fasta_file.clone())
+                .arg(&configure)
+                .spawn()?
+                .wait_with_output()?;
+        }
+    }
+
+    eprintln!(
+        "Successfully copied {}",
+        matches.fasta_file.to_string_lossy()
+    );
 
     Ok(())
 }
