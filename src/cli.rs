@@ -1,7 +1,6 @@
 use clap::{arg, command, value_parser};
 
 use crate::error::{Error, ErrorKind, Result};
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -23,7 +22,7 @@ pub struct CliArgs {
 // createRepeatLandscape.pl
 // rmOut2Fasta.pl
 // rmOutToGFF3.pl
-fn check_executables() -> Result<()> {
+pub fn check_executables() -> Result<()> {
     // automate the checking...
     eprintln!("Checking for required executables...");
     fn check_executables_inner(exec: String) -> Result<()> {
@@ -57,7 +56,7 @@ fn check_executables() -> Result<()> {
     Ok(())
 }
 
-fn parse_args() -> Result<CliArgs> {
+pub fn parse_args() -> Result<CliArgs> {
     let matches = command!()
         // not optional
         .arg(arg!(<FASTA> "Input file in fasta format").value_parser(value_parser!(PathBuf)))
@@ -85,42 +84,4 @@ fn parse_args() -> Result<CliArgs> {
         fasta_file: fasta,
         configure,
     })
-}
-
-// the entry point for the whole program
-pub fn pipeline() -> Result<()> {
-    // check whether the executables are there first
-    check_executables()?;
-
-    // now parse the args
-    let matches = parse_args()?;
-
-    // set up the file system at the specified path
-    set_up_filesystem(matches)?;
-
-    Ok(())
-}
-
-// a function to set up the file system
-// we want to create a set of directories
-// at the matches.configure path
-// three directories:
-// 1. intermediate
-// 2. results
-// 3. pipeline_scripts
-fn set_up_filesystem(matches: CliArgs) -> Result<()> {
-    let mut configure = matches.configure;
-
-    // make the configuration directory
-    // and all the subdirectories
-    configure.push("intermediate");
-    fs::create_dir(configure.clone())?;
-    configure.pop();
-    configure.push("results");
-    fs::create_dir(configure.clone())?;
-    configure.pop();
-    configure.push("pipeline_scripts");
-    fs::create_dir(configure.clone())?;
-
-    Ok(())
 }
