@@ -4,12 +4,22 @@ pub mod error;
 // where all cli related stuff goes
 pub mod cli;
 
-pub use cli::{check_executables, parse_args, CliArgs};
-pub use error::Result;
+// where we will run RepeatModeler
+pub mod repeatmodeler;
+
+pub use cli::{parse_args, CliArgs};
+pub use error::{Error, ErrorKind, Result};
+pub use repeatmodeler::run_repeatmodeler;
 use std::{
     fs::{self, File},
     process::{Command, Stdio},
 };
+
+// the output paths here
+const INTERMEDIATE: &str = "intermediate";
+const RESULTS: &str = "results";
+const PIPELINE_SCRIPTS: &str = "pipeline_scripts";
+const DATA: &str = "data";
 
 // the entry point for the whole program
 pub fn pipeline() -> Result<()> {
@@ -20,7 +30,52 @@ pub fn pipeline() -> Result<()> {
     let matches = parse_args()?;
 
     // set up the file system at the specified path
-    set_up_filesystem(matches)?;
+    set_up_filesystem(matches.clone())?;
+
+    // and now we need to actually run the analyses.
+    run_repeatmodeler(matches)?;
+
+    Ok(())
+}
+
+// check that we have the following
+// executables:
+// the perl scripts are optional at the moment
+// calcDivergenceFromAlign.pl
+// createRepeatLandscape.pl
+// rmOut2Fasta.pl
+// rmOutToGFF3.pl
+fn check_executables() -> Result<()> {
+    // automate the checking...
+    eprintln!("Checking for required executables...");
+    fn check_executables_inner(exec: String) -> Result<()> {
+        match Command::new(exec.clone()).output() {
+            Ok(_) => eprintln!("{} found", exec),
+            Err(err) => {
+                let error_kind = err.kind();
+
+                // TODO: move this printing to the error module
+                eprintln!("{} not found", exec);
+                eprintln!("Please install RepeatMasker/RepeatModeler and add it to your PATH");
+                eprintln!("https://www.repeatmasker.org/");
+                return Err(Error::new(ErrorKind::IO(error_kind)));
+            }
+        }
+        Ok(())
+    }
+
+    // iterate over the executables
+    // and run check_executables_inner
+    for exec in [
+        "RepeatMasker",
+        "RepeatModeler",
+        // "calcDivergenceFromAlign.pl",
+        // "createRepeatLandscape.pl",
+        // "rmOut2Fasta.pl",
+        // "rmOutToGFF3.pl",
+    ] {
+        check_executables_inner(exec.to_string())?;
+    }
 
     Ok(())
 }
@@ -38,13 +93,13 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
 
     // make the configuration directory
     // and all the subdirectories
-    configure.push("intermediate");
+    configure.push(INTERMEDIATE);
     fs::create_dir_all(configure.clone())?;
     configure.pop();
-    configure.push("results");
+    configure.push(RESULTS);
     fs::create_dir_all(configure.clone())?;
     configure.pop();
-    configure.push("pipeline_scripts");
+    configure.push(PIPELINE_SCRIPTS);
     fs::create_dir_all(configure.clone())?;
 
     // also push the code from the `perl` folder
@@ -68,7 +123,7 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
 
     // now deal with the data
     configure.pop();
-    configure.push("data");
+    configure.push(DATA);
     fs::create_dir_all(configure.clone())?;
 
     // check the ending of the file.
