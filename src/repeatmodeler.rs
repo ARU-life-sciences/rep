@@ -11,25 +11,31 @@ pub fn run_repeatmodeler(matches: CliArgs) -> Result<()> {
     let mut data_path = matches.configure.clone();
     data_path.push(DATA);
 
+    // TODO: eventually have the stderr/stdout of commands
+    // as optional, maybe behind a verbose flag, and saved to a file
+
     // build the database here
     let build_database = Command::new("BuildDatabase")
+        .current_dir(data_path.clone())
         .arg("-name")
-        .arg(matches.database)
+        .arg(matches.database.clone())
         .arg("-dir")
-        .arg(data_path)
+        .arg(".")
         .spawn()?;
 
-    let build_database_out = build_database.wait_with_output()?;
-    // TODO: eventually have the output as optional, maybe behind
-    // a verbose flag
-    eprintln!(
-        "STDOUT: {}",
-        String::from_utf8(build_database_out.stdout).unwrap()
-    );
-    eprintln!(
-        "STDERR: {}",
-        String::from_utf8(build_database_out.stderr).unwrap()
-    );
+    let _build_database_out = build_database.wait_with_output()?;
 
+    let run_repeat_modeler = Command::new("RepeatModeler")
+        .current_dir(data_path)
+        .arg("-database")
+        .arg(matches.database)
+        .arg("-threads")
+        .arg(matches.rm_threads.to_string())
+        .spawn()?;
+
+    let _run_repeat_modeler_out = run_repeat_modeler.wait_with_output()?;
+
+    // everything seems to be in the 'data' directory now
+    // so we will have to move things around afterwards.
     Ok(())
 }

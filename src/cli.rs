@@ -14,6 +14,8 @@ pub struct CliArgs {
     pub configure: PathBuf,
     // the name of the database for BuildDatabase
     pub database: String,
+    // repeat modeller threads
+    pub rm_threads: u8,
 }
 
 pub fn parse_args() -> Result<CliArgs> {
@@ -22,7 +24,7 @@ pub fn parse_args() -> Result<CliArgs> {
         .arg(arg!(<FASTA> "Input file in fasta format").value_parser(value_parser!(PathBuf)))
         // not optional
         .arg(
-            arg!(-c --configure <CONFIG_PATH> "Configure the file system")
+            arg!(-c --configure <CONFIG_PATH> "Configure the file system - and create the required directories")
                 .required(true)
                 .value_parser(value_parser!(PathBuf)),
         )
@@ -30,6 +32,12 @@ pub fn parse_args() -> Result<CliArgs> {
             arg!(-d --database <DATABASE_NAME> "Name of the database, when building using `BuildDatabase`.")
                 .required(true)
                 .value_parser(value_parser!(String)),
+        )
+        .arg(
+            arg!(--rm_threads <RM_THREADS> "Number of threads to use for RepeatModeller")
+                .default_value("8")
+                .value_parser(value_parser!(u8)),
+
         )
         .get_matches();
 
@@ -49,10 +57,16 @@ pub fn parse_args() -> Result<CliArgs> {
         .cloned()
         .expect("errored by clap");
 
+    let rm_threads = matches
+        .get_one::<u8>("rm_threads")
+        .cloned()
+        .expect("errored by clap");
+
     // collect the arguments
     Ok(CliArgs {
         fasta_file: fasta,
         configure,
         database,
+        rm_threads,
     })
 }
