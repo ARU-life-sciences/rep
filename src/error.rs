@@ -1,6 +1,14 @@
 use std::{
-    error::Error as StdError, fmt, io::Error as IOError, io::ErrorKind as IOErrorKind, result,
+    error::Error as StdError,
+    fmt,
+    io::Error as IOError,
+    io::ErrorKind as IOErrorKind,
+    num::{ParseFloatError, ParseIntError},
+    result,
 };
+
+use anyhow::Error as AnyhowError;
+use csv::Error as CsvError;
 
 // A type alias for `Result<T, rep::Error>`.
 pub type Result<T> = result::Result<T, Error>;
@@ -31,6 +39,10 @@ impl Error {
 pub enum ErrorKind {
     IO(IOErrorKind),
     GenericCli(String),
+    FastaReading(AnyhowError),
+    Parsef64(ParseFloatError),
+    ParseInt(ParseIntError),
+    BlastParse(CsvError),
 }
 
 impl StdError for Error {}
@@ -41,6 +53,10 @@ impl fmt::Display for Error {
         match &*self.0 {
             ErrorKind::IO(err) => write!(f, "IO error: {}", err),
             ErrorKind::GenericCli(msg) => write!(f, "Generic CLI error: {}", msg),
+            ErrorKind::FastaReading(err) => write!(f, "Fasta reading error: {}", err),
+            ErrorKind::Parsef64(err) => write!(f, "Error parsing float: {}", err),
+            ErrorKind::ParseInt(err) => write!(f, "Error parsing int: {}", err),
+            ErrorKind::BlastParse(err) => write!(f, "Error parsing BLAST output: {}", err),
         }
     }
 }
@@ -49,5 +65,29 @@ impl fmt::Display for Error {
 impl From<IOError> for Error {
     fn from(err: IOError) -> Error {
         Error::new(ErrorKind::IO(err.kind()))
+    }
+}
+
+impl From<AnyhowError> for Error {
+    fn from(err: AnyhowError) -> Error {
+        Error::new(ErrorKind::FastaReading(err))
+    }
+}
+
+impl From<ParseFloatError> for Error {
+    fn from(err: ParseFloatError) -> Error {
+        Error::new(ErrorKind::Parsef64(err))
+    }
+}
+
+impl From<ParseIntError> for Error {
+    fn from(err: ParseIntError) -> Error {
+        Error::new(ErrorKind::ParseInt(err))
+    }
+}
+
+impl From<CsvError> for Error {
+    fn from(err: CsvError) -> Error {
+        Error::new(ErrorKind::BlastParse(err))
     }
 }

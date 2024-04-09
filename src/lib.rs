@@ -7,6 +7,12 @@ pub mod cli;
 // where we will run RepeatModeler
 pub mod repeatmodeler;
 
+// testing ground for rm_curation_pipeline
+pub mod rm_curation_pipeline;
+
+// parsing blast outfmt 7
+pub mod parse_blast;
+
 pub use cli::{parse_args, CliArgs};
 pub use error::{Error, ErrorKind, Result};
 pub use repeatmodeler::run_repeatmodeler;
@@ -23,11 +29,11 @@ const DATA: &str = "data";
 
 // the entry point for the whole program
 pub fn pipeline() -> Result<()> {
-    // check whether the executables are there first
-    check_executables()?;
-
     // now parse the args
     let matches = parse_args()?;
+
+    // check whether the executables are there first
+    check_executables()?;
 
     // set up the file system at the specified path
     set_up_filesystem(matches.clone())?;
