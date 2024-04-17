@@ -13,9 +13,10 @@ pub mod rm_curation_pipeline;
 // parsing blast outfmt 7
 pub mod parse_blast;
 
-pub use cli::{parse_args, CliArgs};
+pub use cli::{parse_args, RepeatMaskerCliArgs, RepeatModelerCliArgs};
 pub use error::{Error, ErrorKind, Result};
-pub use repeatmodeler::run_repeatmodeler;
+use repeatmodeler::run_repeatmasker;
+use repeatmodeler::run_repeatmodeler;
 use std::{
     fs::{self, File},
     process::{Command, Stdio},
@@ -32,14 +33,26 @@ pub fn pipeline() -> Result<()> {
     // now parse the args
     let matches = parse_args()?;
 
-    // check whether the executables are there first
-    check_executables()?;
+    match matches {
+        cli::CliArgs::RepeatModeler(repeatmodeler_args) => {
+            // check whether the executables are there first
+            check_executables()?;
 
-    // set up the file system at the specified path
-    set_up_filesystem(matches.clone())?;
+            // set up the file system at the specified path
+            // if specified in the matches
+            set_up_filesystem(repeatmodeler_args.clone())?;
 
-    // and now we need to actually run the analyses.
-    run_repeatmodeler(matches)?;
+            // and now we need to actually run the analyses.
+            run_repeatmodeler(repeatmodeler_args.clone())?;
+        }
+        cli::CliArgs::RepeatMasker(repeatmasker_args) => {
+            // check again
+            check_executables()?;
+
+            // and run repeatmasker
+            run_repeatmasker(repeatmasker_args)?;
+        }
+    }
 
     Ok(())
 }
@@ -94,7 +107,7 @@ fn check_executables() -> Result<()> {
 // 2. results
 // 3. pipeline_scripts
 // 4. data
-fn set_up_filesystem(matches: CliArgs) -> Result<()> {
+fn set_up_filesystem(matches: RepeatModelerCliArgs) -> Result<()> {
     let mut configure = matches.configure;
 
     // make the configuration directory

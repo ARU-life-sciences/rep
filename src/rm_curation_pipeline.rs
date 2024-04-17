@@ -1,7 +1,9 @@
 // give proper wledgement to the original source code and provide a link to the original source code.
 use std::{borrow::Cow, fs, io, path::PathBuf};
 
-use crate::{parse_blast::BlastRecord, CliArgs, Error, ErrorKind, Result, DATA, INTERMEDIATE};
+use crate::{
+    parse_blast::BlastRecord, Error, ErrorKind, RepeatModelerCliArgs, Result, DATA, INTERMEDIATE,
+};
 
 use bio::io::fasta;
 
@@ -9,7 +11,7 @@ use bio::io::fasta;
 // are no special characters in the fasta headers
 // `/`. Do this here.
 
-pub fn rm_curation_pipeline(matches: CliArgs) -> Result<()> {
+pub fn rm_curation_pipeline(matches: RepeatModelerCliArgs) -> Result<()> {
     let mut data_path = matches.configure.clone();
     data_path.push(DATA);
 
@@ -52,7 +54,7 @@ pub fn rm_curation_pipeline(matches: CliArgs) -> Result<()> {
 
 // the actual pipeline
 fn run_rmdl_curation_pipeline(
-    matches: CliArgs,
+    matches: RepeatModelerCliArgs,
     genome_fasta_name: Cow<str>,
     rmdl_library: PathBuf,
 ) -> Result<()> {
@@ -146,7 +148,7 @@ fn blast_repeatmasked(
 // &step2($FASTA, $blastdir, $maxhitdist, $minfrac, $ASSEMBLY);
 
 fn find_hits_from_assembly(
-    matches: CliArgs,
+    matches: RepeatModelerCliArgs,
     rmdl_library: PathBuf,
     blastn_dir: PathBuf,
     maxhitdist: i32,
