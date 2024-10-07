@@ -7,6 +7,9 @@ pub mod cli;
 // where we will run RepeatModeler
 pub mod repeatmodeler;
 
+// where we run RepeatMasker
+pub mod repeatmasker;
+
 // testing ground for rm_curation_pipeline
 pub mod rm_curation_pipeline;
 
@@ -94,6 +97,8 @@ fn check_executables() -> Result<()> {
 // 2. results
 // 3. pipeline_scripts
 // 4. data
+//   - RepeatModeler data
+//   - RepeatMasker data
 fn set_up_filesystem(matches: CliArgs) -> Result<()> {
     let mut configure = matches.configure;
 
@@ -127,9 +132,11 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
         configure.pop();
     }
 
-    // now deal with the data
+    // now deal with the data, go back to the configure directory.
     configure.pop();
+    // and into the data directory
     configure.push(DATA);
+    // still in the data directory
     fs::create_dir_all(configure.clone())?;
 
     // check the ending of the file.
@@ -154,10 +161,12 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
             // as > cannot be used in Command.
             let mut f = File::create(&configure)?;
 
+            // FIXME: remove this unwrap
             std::io::copy(&mut gunzip_process.stdout.unwrap(), &mut f)?;
         }
         false => {
             // else use cp
+            // FIXME: remove this unwrap
             let base_fasta_name = matches.fasta_file.file_name().unwrap();
             configure.push(base_fasta_name);
             Command::new("cp")
@@ -168,6 +177,15 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
                 .wait_with_output()?;
         }
     }
+
+    // make separate subdir for RepeatMasker and RepeatModeler
+    // within the data directory.
+    configure.push("repeatmasker");
+    fs::create_dir_all(configure.clone())?;
+    configure.pop();
+    configure.push("repeatmodeler");
+    fs::create_dir_all(configure.clone())?;
+    configure.pop();
 
     eprintln!(
         "Successfully copied {}",

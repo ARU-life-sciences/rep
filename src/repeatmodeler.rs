@@ -6,10 +6,18 @@ use crate::{CliArgs, Result, DATA};
 use std::process::Command;
 
 pub fn run_repeatmodeler(matches: CliArgs) -> Result<()> {
+    // if we are running repeatmasker only
+    if matches.rma_only {
+        eprintln!("Only running RepeatMasker, skipping RepeatModeler");
+        return Ok(());
+    }
+
     // we have all of our directories set up.
     // we need to specify the directory with the data in it
     let mut data_path = matches.configure.clone();
     data_path.push(DATA);
+    // and go into the repeatmodeler dir
+    data_path.push("repeatmodeler");
 
     // TODO: eventually have the stderr/stdout of commands
     // as optional, maybe behind a verbose flag, and saved to a file
@@ -30,7 +38,7 @@ pub fn run_repeatmodeler(matches: CliArgs) -> Result<()> {
         .arg("-database")
         .arg(matches.database)
         .arg("-threads")
-        .arg(matches.rm_threads.to_string())
+        .arg(matches.rmo_threads.to_string())
         .spawn()?;
 
     let _run_repeat_modeler_out = run_repeat_modeler.wait_with_output()?;

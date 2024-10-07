@@ -1,4 +1,4 @@
-// give proper wledgement to the original source code and provide a link to the original source code.
+// give proper acknowledgement to the original source code and provide a link to the original source code.
 use std::{borrow::Cow, fs, io, path::PathBuf};
 
 use crate::{parse_blast::BlastRecord, CliArgs, Error, ErrorKind, Result, DATA, INTERMEDIATE};
