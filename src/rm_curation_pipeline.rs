@@ -16,8 +16,10 @@ pub fn rm_curation_pipeline(matches: CliArgs) -> Result<()> {
     // TODO: check this is correct. The aim here is to use the
     // fasta we copied to the data directory. So we need its name.
     let cli_matches_fasta_file = matches.fasta_file.clone();
-    let genome_fasta_name = match cli_matches_fasta_file.file_name() {
-        Some(n) => n.to_string_lossy(),
+    // get the basename and push this onto the data path
+
+    let fasta_name = match cli_matches_fasta_file.file_name() {
+        Some(b) => b,
         None => {
             return Err(Error::new(ErrorKind::GenericCli(
                 "Could not get fasta name".into(),
@@ -25,17 +27,22 @@ pub fn rm_curation_pipeline(matches: CliArgs) -> Result<()> {
         }
     };
 
+    // the original data path
+    let data_path_clone = data_path.clone();
+    // the genome fasta name
+    data_path.push(fasta_name);
+
     // first of all we need to run "makeblastdb"
     // with the input fasta,
     // but we want the dbtype to be nucleotide and
     // parse the seqids
     let makeblastdb = std::process::Command::new("makeblastdb")
-        .current_dir(data_path)
-        .args(["-in", &genome_fasta_name])
+        .current_dir(data_path_clone)
+        .args(["-in", &data_path.to_str().unwrap()])
         // this is what is written here:
         // https://github.com/ValentinaPeona/TardigraTE/blob/main/Practicals/Practical3.md
         // but we can modify the name later
-        .args(["-out", &genome_fasta_name])
+        .args(["-out", &fasta_name.to_str().unwrap()])
         .args(["-dbtype", "nucl"])
         .arg("-parse_seqids")
         .spawn()?;
@@ -45,7 +52,7 @@ pub fn rm_curation_pipeline(matches: CliArgs) -> Result<()> {
     // a random path so no errors for now
     let rmdl_library = PathBuf::new();
 
-    run_rmdl_curation_pipeline(matches, genome_fasta_name, rmdl_library)?;
+    run_rmdl_curation_pipeline(matches, fasta_name, rmdl_library)?;
 
     Ok(())
 }
@@ -53,7 +60,7 @@ pub fn rm_curation_pipeline(matches: CliArgs) -> Result<()> {
 // the actual pipeline
 fn run_rmdl_curation_pipeline(
     matches: CliArgs,
-    genome_fasta_name: Cow<str>,
+    genome_fasta_name: &std::ffi::OsStr,
     rmdl_library: PathBuf,
 ) -> Result<()> {
     // FIXME: this path is used a bunch of times, maybe we can
@@ -61,13 +68,13 @@ fn run_rmdl_curation_pipeline(
     // the path to the genome, and also the blast database
     let mut genome_and_blastdb_path = matches.configure.clone();
     genome_and_blastdb_path.push(DATA);
-    genome_and_blastdb_path.push(genome_fasta_name.to_string());
+    genome_and_blastdb_path.push(genome_fasta_name);
 
     // # Make folders blastn and aligned
     // we want these folders to be in the intermediate directory
 
     let blastn_dir = matches.configure.join(INTERMEDIATE).join("blastn");
-    fs::create_dir_all(blastn_dir)?;
+    fs::create_dir_all(blastn_dir.clone())?;
     let aligned_dir = matches.configure.join(INTERMEDIATE).join("aligned");
     fs::create_dir_all(aligned_dir)?;
 
@@ -87,15 +94,28 @@ fn run_rmdl_curation_pipeline(
         .configure
         .join(INTERMEDIATE)
         .join("tempMapNames.txt");
+
+    // should we be making the mafft here?
     let temp_mafft = matches.configure.join(INTERMEDIATE).join("tempMafft.txt");
 
     // 1. blast all files in the repeatmasked directory
     blast_repeatmasked(
-        rmdl_library,
+        rmdl_library.clone(),
         genome_and_blastdb_path,
-        temp_blast_out,
+        temp_blast_out.clone(),
         temp_map_names,
         hits,
+    )?;
+
+    // 2. Find hits from assembly (genome) and add original query
+    find_hits_from_assembly(
+        matches,
+        rmdl_library,
+        blastn_dir,
+        maxhitdist,
+        minfrac,
+        genome_fasta_name,
+        temp_blast_out,
     )?;
 
     Ok(())
@@ -151,13 +171,13 @@ fn find_hits_from_assembly(
     blastn_dir: PathBuf,
     maxhitdist: i32,
     minfrac: f64,
-    genome_fasta_name: Cow<str>,
+    genome_fasta_name: &std::ffi::OsStr,
     temp_blast_out: PathBuf,
 ) -> Result<()> {
     // the path to the genome, and also the blast database
     let mut genome_path = matches.configure.clone();
     genome_path.push(DATA);
-    genome_path.push(genome_fasta_name.to_string());
+    genome_path.push(genome_fasta_name);
 
     // Remove any already existing fasta files in the blast dir
     for entry in fs::read_dir(blastn_dir.clone())? {
@@ -213,6 +233,7 @@ fn find_hits_from_assembly(
         // sort blast hits on evalue, and select top 20 records
         blast_hits.sort_by_evalue();
         let top_blast_hits = blast_hits.top_n(20);
+        let unique_hits = top_blast_hits.filter_unique_combinations();
     }
 
     Ok(())

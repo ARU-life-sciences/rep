@@ -62,7 +62,7 @@ impl BlastRecord {
     }
 }
 
-pub struct BlastTable(Vec<BlastRecord>);
+pub struct BlastTable(pub Vec<BlastRecord>);
 
 impl BlastTable {
     pub fn sort_by_evalue(&mut self) {
@@ -76,7 +76,21 @@ impl BlastTable {
             .sort_by(|a, b| a.sstart.partial_cmp(&b.sstart).unwrap());
     }
 
-    pub fn top_n(self, n: usize) -> Vec<BlastRecord> {
-        self.0.into_iter().take(n).collect()
+    pub fn top_n(self, n: usize) -> Self {
+        BlastTable(self.0.into_iter().take(n).collect())
+    }
+
+    // Extract unique combinations of query and subject
+    pub fn filter_unique_combinations(self) -> Self {
+        let mut unique: Vec<BlastRecord> = Vec::new();
+        for record in self.0 {
+            if !unique
+                .iter()
+                .any(|x| x.qseqid == record.qseqid && x.sseqid == record.sseqid)
+            {
+                unique.push(record);
+            }
+        }
+        BlastTable(unique)
     }
 }

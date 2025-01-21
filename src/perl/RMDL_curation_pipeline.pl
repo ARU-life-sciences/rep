@@ -47,7 +47,7 @@ print "-----------------------------------------------------\n";
 # BLAST 
 &step1($FASTA, $blastDBpath, $tempBlastOut, $tempMapNames, $hits);
 
-# FIND HITS FROM ASSEMBLYv AND AD ORIGINAL QUERY
+# FIND HITS FROM ASSEMBLY AND AD ORIGINAL QUERY
 &step2($FASTA, $blastdir, $maxhitdist, $minfrac, $ASSEMBLY);
 
 #RUN THE ALIGNMENT WITH MAFFT

@@ -19,6 +19,7 @@ pub mod parse_blast;
 pub use cli::{parse_args, CliArgs};
 pub use error::{Error, ErrorKind, Result};
 pub use repeatmodeler::run_repeatmodeler;
+pub use rm_curation_pipeline::rm_curation_pipeline;
 use std::{
     fs::{self, File},
     process::{Command, Stdio},
@@ -41,8 +42,18 @@ pub fn pipeline() -> Result<()> {
     // set up the file system at the specified path
     set_up_filesystem(matches.clone())?;
 
+    // if we are only curating the repeats
+    if matches.curation_only {
+        // run the curation pipeline and exit
+        return rm_curation_pipeline(matches);
+    }
+
     // and now we need to actually run the analyses.
-    run_repeatmodeler(matches)?;
+    run_repeatmodeler(matches.clone())?;
+
+    // next we run the curation pipeline
+    // but make sure this all works first!
+    // rm_curation_pipeline(matches)?;
 
     Ok(())
 }
@@ -57,6 +68,7 @@ pub fn pipeline() -> Result<()> {
 fn check_executables() -> Result<()> {
     // automate the checking...
     eprintln!("Checking for required executables...");
+
     fn check_executables_inner(exec: String) -> Result<()> {
         match Command::new(exec.clone()).output() {
             Ok(_) => eprintln!("{} found", exec),
@@ -113,6 +125,7 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
     configure.push(PIPELINE_SCRIPTS);
     fs::create_dir_all(configure.clone())?;
 
+    // FIXME: remove these eventually, as I'm re-writing in Rust.
     // also push the code from the `perl` folder
     // into the pipeline_scripts folder
     let rmdl_curation_pipeline = include_str!("perl/RMDL_curation_pipeline.pl");
