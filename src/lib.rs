@@ -16,12 +16,19 @@ pub mod rm_curation_pipeline;
 // parsing blast outfmt 7
 pub mod parse_blast;
 
+// command runner for testing
+pub mod command_runner;
+
 pub use cli::{parse_args, CliArgs};
+pub use command_runner::{CommandRunner, RealCommandRunner};
 pub use error::{Error, ErrorKind, Result};
+pub use repeatmasker::run_repeatmasker;
 pub use repeatmodeler::run_repeatmodeler;
 pub use rm_curation_pipeline::rm_curation_pipeline;
+
 use std::{
     fs::{self, File},
+    path::PathBuf,
     process::{Command, Stdio},
 };
 
@@ -30,6 +37,13 @@ const INTERMEDIATE: &str = "intermediate";
 const RESULTS: &str = "results";
 const PIPELINE_SCRIPTS: &str = "pipeline_scripts";
 const DATA: &str = "data";
+
+fn make_subdir(base: &PathBuf, name: &str) -> Result<()> {
+    let mut p = base.clone();
+    p.push(name);
+    fs::create_dir_all(&p)?;
+    Ok(())
+}
 
 // the entry point for the whole program
 pub fn pipeline() -> Result<()> {
@@ -43,17 +57,33 @@ pub fn pipeline() -> Result<()> {
     set_up_filesystem(matches.clone())?;
 
     // if we are only curating the repeats
-    if matches.curation_only {
+    if matches.curation_only.is_some() {
         // run the curation pipeline and exit
-        return rm_curation_pipeline(matches);
+        eprintln!("Running the curation pipeline...");
+        rm_curation_pipeline(matches.clone())?
+    }
+
+    if matches.rma_only {
+        // if we are just running repeatmodeler
+        // then run it and exit
+        eprintln!("Running RepeatModeler only...");
+        let runner = RealCommandRunner;
+        run_repeatmodeler(matches.clone(), &runner)?;
+        return Ok(());
     }
 
     // and now we need to actually run the analyses.
-    run_repeatmodeler(matches.clone())?;
+    eprintln!("Running RepeatModeler...");
+    let runner = RealCommandRunner;
+    run_repeatmodeler(matches.clone(), &runner)?;
 
     // next we run the curation pipeline
     // but make sure this all works first!
     // rm_curation_pipeline(matches)?;
+
+    // and also run repeatmasker
+    eprintln!("Running RepeatMasker...");
+    run_repeatmasker(matches.clone(), &runner)?;
 
     Ok(())
 }
@@ -88,8 +118,8 @@ fn check_executables() -> Result<()> {
     // iterate over the executables
     // and run check_executables_inner
     for exec in [
-        "RepeatMasker",
-        "RepeatModeler",
+        "/software/team301/repeat-annotation/RepeatMasker/RepeatMasker",
+        "/software/team301/repeat-annotation/RepeatModeler-2.0.5/RepeatModeler",
         // "calcDivergenceFromAlign.pl",
         // "createRepeatLandscape.pl",
         // "rmOut2Fasta.pl",
@@ -112,18 +142,19 @@ fn check_executables() -> Result<()> {
 //   - RepeatModeler data
 //   - RepeatMasker data
 fn set_up_filesystem(matches: CliArgs) -> Result<()> {
-    let mut configure = matches.configure;
+    // if we are just curating repeats, return early
+    if matches.curation_only.is_some() {
+        return Ok(());
+    }
+
+    let mut configure = matches.configure.clone().unwrap();
 
     // make the configuration directory
     // and all the subdirectories
-    configure.push(INTERMEDIATE);
-    fs::create_dir_all(configure.clone())?;
-    configure.pop();
-    configure.push(RESULTS);
-    fs::create_dir_all(configure.clone())?;
-    configure.pop();
-    configure.push(PIPELINE_SCRIPTS);
-    fs::create_dir_all(configure.clone())?;
+    make_subdir(&configure, INTERMEDIATE)?;
+    make_subdir(&configure, RESULTS)?;
+    make_subdir(&configure, PIPELINE_SCRIPTS)?;
+    make_subdir(&configure, DATA)?;
 
     // FIXME: remove these eventually, as I'm re-writing in Rust.
     // also push the code from the `perl` folder
@@ -132,7 +163,8 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
     let rename_rmdl_consensi = include_str!("perl/renameRMDLconsensi.pl");
     let shorten_scaffold_names = include_str!("perl/shortenScaffoldnames.pl");
 
-    // now write these to file
+    // now write these to file in the pipeline_scripts folder
+    configure.push(PIPELINE_SCRIPTS);
     for (code, path) in [
         (rmdl_curation_pipeline, "RMDL_curation_pipeline.pl"),
         (rename_rmdl_consensi, "renameRMDLconsensi.pl"),
@@ -145,12 +177,9 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
         configure.pop();
     }
 
-    // now deal with the data, go back to the configure directory.
+    // up and move into data
     configure.pop();
-    // and into the data directory
     configure.push(DATA);
-    // still in the data directory
-    fs::create_dir_all(configure.clone())?;
 
     // check the ending of the file.
     match matches.fasta_file.to_string_lossy().ends_with("gz") {
@@ -159,7 +188,11 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
             let base_fasta_name = matches.fasta_file.file_name().unwrap();
             let fasta_name = base_fasta_name.to_string_lossy();
             // FIXME: the following line will panic if the file is mal-formatted
-            let new_fasta_name = fasta_name.strip_suffix(".gz").unwrap();
+            let new_fasta_name = fasta_name.strip_suffix(".gz").ok_or_else(|| {
+                Error::new(ErrorKind::GenericCli(
+                    "FASTA filename does not end with .gz".into(),
+                ))
+            })?;
 
             configure.push(new_fasta_name);
             // add the new command here
@@ -193,12 +226,17 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
 
     // make separate subdir for RepeatMasker and RepeatModeler
     // within the data directory.
+    eprintln!("Making repeatmasker and repeatmodeler dirs...");
+    // do it again to make sure
+    let mut configure = matches.configure.clone().unwrap();
+    configure.push(DATA);
     configure.push("repeatmasker");
     fs::create_dir_all(configure.clone())?;
     configure.pop();
     configure.push("repeatmodeler");
     fs::create_dir_all(configure.clone())?;
     configure.pop();
+    eprintln!("Made repeatmasker and repeatmodeler dirs...");
 
     eprintln!(
         "Successfully copied {}",
@@ -206,4 +244,39 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_directory_structure_created() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().to_path_buf();
+        let fasta_path = dir.path().join("genome.fa");
+        std::fs::write(&fasta_path, ">seq\nACGT").unwrap();
+
+        let args = CliArgs {
+            fasta_file: fasta_path,
+            configure: Some(config_path.clone()),
+            database: Some("genomedb".into()),
+            rmo_threads: 1,
+            rma_threads: 1,
+            rma_only: false,
+            curation_only: None,
+            curation_rmdl_library: None,
+            verbose: false,
+        };
+
+        set_up_filesystem(args).unwrap();
+
+        assert!(config_path.join("data").exists());
+        assert!(config_path.join("intermediate").exists());
+        assert!(config_path.join("results").exists());
+        assert!(config_path.join("pipeline_scripts").exists());
+        assert!(config_path.join("data").join("repeatmasker").exists());
+        assert!(config_path.join("data").join("repeatmodeler").exists());
+    }
 }

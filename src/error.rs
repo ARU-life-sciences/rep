@@ -4,14 +4,13 @@ use std::{
     io::Error as IOError,
     io::ErrorKind as IOErrorKind,
     num::{ParseFloatError, ParseIntError},
-    result,
 };
 
 use anyhow::Error as AnyhowError;
 use csv::Error as CsvError;
 
 // A type alias for `Result<T, rep::Error>`.
-pub type Result<T> = result::Result<T, Error>;
+pub type Result<T> = anyhow::Result<T, Error>;
 
 // An error that can happen.
 #[derive(Debug)]

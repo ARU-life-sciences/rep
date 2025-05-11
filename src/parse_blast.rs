@@ -9,6 +9,7 @@ use csv::ReaderBuilder;
 // and implementations to parse
 // column headers are: qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
 
+#[derive(Clone)]
 pub struct BlastRecord {
     pub qseqid: String,
     pub sseqid: String,
@@ -62,9 +63,35 @@ impl BlastRecord {
     }
 }
 
+#[derive(Clone)]
 pub struct BlastTable(pub Vec<BlastRecord>);
 
 impl BlastTable {
+    pub fn sort_by_alignment_positions(&mut self) {
+        self.0
+            .sort_by(|a, b| a.sstart.partial_cmp(&b.sstart).unwrap());
+    }
+
+    pub fn filter_by_query_subject(&self, query: &str, subject: &str) -> Self {
+        let filtered: Vec<BlastRecord> = self
+            .0
+            .iter()
+            .filter(|x| x.qseqid == query && x.sseqid == subject)
+            .cloned()
+            .collect();
+        BlastTable(filtered)
+    }
+
+    pub fn filter_by_query_name(&self, query: &str) -> Self {
+        let filtered: Vec<BlastRecord> = self
+            .0
+            .iter()
+            .filter(|x| x.qseqid == query)
+            .cloned()
+            .collect();
+        BlastTable(filtered)
+    }
+
     pub fn sort_by_evalue(&mut self) {
         // FIXME: sort out this unwrap
         self.0
