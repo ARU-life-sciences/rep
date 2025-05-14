@@ -1,24 +1,13 @@
-// the error module
-pub mod error;
-
-// where all cli related stuff goes
-pub mod cli;
-
-// where we will run RepeatModeler
-pub mod repeatmodeler;
-
-// where we run RepeatMasker
-pub mod repeatmasker;
-
-// testing ground for rm_curation_pipeline
-pub mod rm_curation_pipeline;
-
-// parsing blast outfmt 7
-pub mod parse_blast;
-
-// command runner for testing
+// Public modules used across the CLI tool
+pub mod cli; // Command-line argument parsing
 pub mod command_runner;
+pub mod error; // Error types and handling
+pub mod parse_blast; // BLAST outfmt 7 parser
+pub mod repeatmasker; // RepeatMasker wrapper
+pub mod repeatmodeler; // RepeatModeler wrapper
+pub mod rm_curation_pipeline; // Custom post-processing of RepeatModeler output // Abstraction for command execution (for testing or swapping impls)
 
+// Re-export key types and functions
 pub use cli::{parse_args, CliArgs};
 pub use command_runner::{CommandRunner, RealCommandRunner};
 pub use error::{Error, ErrorKind, Result};
@@ -32,12 +21,13 @@ use std::{
     process::{Command, Stdio},
 };
 
-// the output paths here
+// subdirectories used in the pipeline
 const INTERMEDIATE: &str = "intermediate";
 const RESULTS: &str = "results";
 const PIPELINE_SCRIPTS: &str = "pipeline_scripts";
 const DATA: &str = "data";
 
+// Utility to create a named subdirectory within a base path
 fn make_subdir(base: &PathBuf, name: &str) -> Result<()> {
     let mut p = base.clone();
     p.push(name);
@@ -45,7 +35,7 @@ fn make_subdir(base: &PathBuf, name: &str) -> Result<()> {
     Ok(())
 }
 
-// the entry point for the whole program
+// Main entry point for running the full pipeline
 pub fn pipeline() -> Result<()> {
     // now parse the args
     let matches = parse_args()?;
@@ -60,7 +50,8 @@ pub fn pipeline() -> Result<()> {
     if matches.curation_only.is_some() {
         // run the curation pipeline and exit
         eprintln!("Running the curation pipeline...");
-        rm_curation_pipeline(matches.clone())?
+        rm_curation_pipeline(matches.clone())?;
+        return Ok(());
     }
 
     if matches.rma_only {
@@ -76,10 +67,6 @@ pub fn pipeline() -> Result<()> {
     eprintln!("Running RepeatModeler...");
     let runner = RealCommandRunner;
     run_repeatmodeler(matches.clone(), &runner)?;
-
-    // next we run the curation pipeline
-    // but make sure this all works first!
-    // rm_curation_pipeline(matches)?;
 
     // and also run repeatmasker
     eprintln!("Running RepeatMasker...");
@@ -120,10 +107,6 @@ fn check_executables() -> Result<()> {
     for exec in [
         "/software/team301/repeat-annotation/RepeatMasker/RepeatMasker",
         "/software/team301/repeat-annotation/RepeatModeler-2.0.5/RepeatModeler",
-        // "calcDivergenceFromAlign.pl",
-        // "createRepeatLandscape.pl",
-        // "rmOut2Fasta.pl",
-        // "rmOutToGFF3.pl",
     ] {
         check_executables_inner(exec.to_string())?;
     }
@@ -156,29 +139,6 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
     make_subdir(&configure, PIPELINE_SCRIPTS)?;
     make_subdir(&configure, DATA)?;
 
-    // FIXME: remove these eventually, as I'm re-writing in Rust.
-    // also push the code from the `perl` folder
-    // into the pipeline_scripts folder
-    let rmdl_curation_pipeline = include_str!("perl/RMDL_curation_pipeline.pl");
-    let rename_rmdl_consensi = include_str!("perl/renameRMDLconsensi.pl");
-    let shorten_scaffold_names = include_str!("perl/shortenScaffoldnames.pl");
-
-    // now write these to file in the pipeline_scripts folder
-    configure.push(PIPELINE_SCRIPTS);
-    for (code, path) in [
-        (rmdl_curation_pipeline, "RMDL_curation_pipeline.pl"),
-        (rename_rmdl_consensi, "renameRMDLconsensi.pl"),
-        (shorten_scaffold_names, "shortenScaffoldnames.pl"),
-    ]
-    .iter()
-    {
-        configure.push(path);
-        fs::write(configure.clone(), code)?;
-        configure.pop();
-    }
-
-    // up and move into data
-    configure.pop();
     configure.push(DATA);
 
     // check the ending of the file.

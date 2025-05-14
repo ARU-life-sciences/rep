@@ -10,6 +10,7 @@ use std::{
 
 use crate::{parse_blast::BlastRecord, CliArgs, Error, ErrorKind, Result, DATA, INTERMEDIATE};
 
+use anyhow::Context;
 use bio::io::fasta::{self, Writer};
 
 // TODO: before we start, have to make sure there
@@ -65,7 +66,8 @@ pub fn rm_curation_pipeline(matches: CliArgs) -> Result<()> {
             .args(["-out", fasta_name.to_str().unwrap()])
             .args(["-dbtype", "nucl"])
             .arg("-parse_seqids")
-            .spawn()?;
+            .spawn()
+            .with_context(|| "makeblastdb command failed".to_string())?;
 
     let _blastdb = makeblastdb.wait_with_output()?;
 
@@ -264,7 +266,7 @@ fn find_hits_from_assembly(
     let repeat_ids: HashSet<_> = blast_hits.0.iter().map(|h| h.qseqid.clone()).collect();
 
     for repeat_id in repeat_ids {
-        let outfile = blastn_dir.join(format!("{}.fa", repeat_id));
+        let outfile = blastn_dir.join(format!("{}.fa", sanitize_filename(&repeat_id)));
 
         let mut filtered_hits = blast_hits.filter_by_query_name(&repeat_id);
         filtered_hits.sort_by_evalue();
@@ -325,7 +327,13 @@ fn find_hits_from_assembly(
                         stop + flank,
                         direction,
                         outfile.clone(),
-                    )?;
+                    )
+                    .with_context(|| {
+                        format!(
+                            "Failed to extract {} from {}:{}-{}",
+                            repeat_id, genome_id, start, stop
+                        )
+                    })?;
 
                     // reset for next cluster
                     start = min(hs, he);
@@ -359,7 +367,13 @@ fn find_hits_from_assembly(
                 stop + flank,
                 direction,
                 outfile.clone(),
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to extract {} from {}:{}-{}",
+                    repeat_id, genome_id, start, stop
+                )
+            })?;
         }
     }
 
@@ -372,7 +386,8 @@ fn run_mafft_alignments(blast_dir: &Path, align_dir: &Path, log_path: &Path) -> 
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_path)?;
+        .open(log_path)
+        .with_context(|| format!("Failed to open file {:?}", log_path))?;
 
     for entry in fs::read_dir(blast_dir)? {
         let entry = entry?;
@@ -397,7 +412,7 @@ fn run_mafft_alignments(blast_dir: &Path, align_dir: &Path, log_path: &Path) -> 
                         .arg("--maxiterate")
                         .arg("1000")
                         .arg("--thread")
-                        .arg("3")
+                        .arg("10")
                         .arg("--adjustdirection")
                         .arg(path.to_str().unwrap())
                         .stdout(fs::File::create(&output)?)
@@ -436,7 +451,11 @@ fn extract_seq(
     direction: char,
     outfile: PathBuf,
 ) -> Result<()> {
-    let file = OpenOptions::new().append(true).create(true).open(outfile)?;
+    let file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(outfile.clone())
+        .with_context(|| format!("Failed to open file {:?}", outfile))?;
     let mut writer = Writer::new(BufWriter::new(file));
 
     if let Some(seq) = genome.get(query) {
@@ -452,6 +471,10 @@ fn extract_seq(
     }
 
     Ok(())
+}
+
+fn sanitize_filename(s: &str) -> String {
+    s.replace(['/', '\\', ' ', '#', ':'], "_")
 }
 
 #[cfg(test)]
@@ -486,8 +509,8 @@ mod tests {
 
     #[test]
     fn test_full_pipeline() -> Result<()> {
-        let genome = PathBuf::from("./test/data/genome.fa");
-        let repeat = PathBuf::from("rmdl.fa");
+        let genome = PathBuf::from("./test/data/genome2.fa");
+        let repeat = PathBuf::from("rmdl2.fa");
 
         let args = CliArgs {
             fasta_file: genome,
