@@ -1,0 +1,102 @@
+nthread = 3
+nadd = 0
+inputfile = infile
+thresholdtorev = 0.000000
+reflim = 5000
+mode = a
+generating a scoring matrix for nucleotide (dist=200) ... done
+
+Step 1/2
+
+
+Step 2/2
+
+makedirectionlist (nuc) Version 7.525
+alg=m, model=DNA200 (2), 1.53 (4.59), 0.37 (1.11), noshift, amax=0.0
+3 thread(s)
+
+directionfile = _direction
+inputfile = infile
+subalignment = 0
+subalignmentoffset = 0
+1 x 60 - 60 d
+outputhat23=16
+treein = 0
+compacttree = 0
+Warning: Only 1 sequence found.
+minimumweight = 0.000010
+autosubalignment = 0.000000
+nthread = 3
+randomseed = 0
+blosum 62 / kimura 200
+poffset = 0
+niter = 16
+sueff_global = 0.100000
+nadd = 16
+Warning: Only 1 sequence found.
+
+Strategy:
+ E-INS-i (Suitable for sequences with long unalignable regions, very slow)
+ Iterative refinement method (<16) with LOCAL pairwise alignment with generalized affine gap costs (Altschul 1998)
+
+If unsure which option to use, try 'mafft --auto input > output'.
+For more information, see 'mafft --help', 'mafft --man' and the mafft page.
+
+The default gap scoring scheme has been changed in version 7.110 (2013 Oct).
+It tends to insert more gaps into gap-rich regions than previous versions.
+To disable this change, add the --leavegappyregion option.
+
+Parameters for the E-INS-i option have been changed in version 7.243 (2015 Jun).
+To switch to the old parameters, use --oldgenafpair, instead of --genafpair.
+
+nthread = 3
+nadd = 0
+inputfile = infile
+thresholdtorev = 0.000000
+reflim = 5000
+mode = a
+generating a scoring matrix for nucleotide (dist=200) ... done
+
+Step 1/2
+
+
+Step 2/2
+
+makedirectionlist (nuc) Version 7.525
+alg=m, model=DNA200 (2), 1.53 (4.59), 0.37 (1.11), noshift, amax=0.0
+3 thread(s)
+
+directionfile = _direction
+inputfile = infile
+subalignment = 0
+subalignmentoffset = 0
+1 x 60 - 60 d
+outputhat23=16
+treein = 0
+compacttree = 0
+Warning: Only 1 sequence found.
+minimumweight = 0.000010
+autosubalignment = 0.000000
+nthread = 3
+randomseed = 0
+blosum 62 / kimura 200
+poffset = 0
+niter = 16
+sueff_global = 0.100000
+nadd = 16
+Warning: Only 1 sequence found.
+
+Strategy:
+ E-INS-i (Suitable for sequences with long unalignable regions, very slow)
+ Iterative refinement method (<16) with LOCAL pairwise alignment with generalized affine gap costs (Altschul 1998)
+
+If unsure which option to use, try 'mafft --auto input > output'.
+For more information, see 'mafft --help', 'mafft --man' and the mafft page.
+
+The default gap scoring scheme has been changed in version 7.110 (2013 Oct).
+It tends to insert more gaps into gap-rich regions than previous versions.
+To disable this change, add the --leavegappyregion option.
+
+Parameters for the E-INS-i option have been changed in version 7.243 (2015 Jun).
+To switch to the old parameters, use --oldgenafpair, instead of --genafpair.
+

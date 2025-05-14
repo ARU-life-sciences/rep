@@ -50,7 +50,7 @@ impl BlastRecord {
     pub fn from_file(path: PathBuf) -> Result<BlastTable> {
         let mut rdr = ReaderBuilder::new()
             .delimiter(b'\t')
-            .has_headers(true)
+            .has_headers(false)
             .from_path(path)?;
 
         let mut records = Vec::new();

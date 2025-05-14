@@ -1,9 +1,11 @@
 // give proper acknowledgement to the original source code and provide a link to the original source code.
 use std::{
     cmp::{max, min},
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
-    io::{self, BufWriter},
-    path::PathBuf,
+    io::BufWriter,
+    path::{Path, PathBuf},
+    process::Command,
 };
 
 use crate::{parse_blast::BlastRecord, CliArgs, Error, ErrorKind, Result, DATA, INTERMEDIATE};
@@ -52,7 +54,7 @@ pub fn rm_curation_pipeline(matches: CliArgs) -> Result<()> {
     // with the input fasta,
     // but we want the dbtype to be nucleotide and
     // parse the seqids
-    eprintln!("Running makeblastdb");
+    eprintln!("Running makeblastdb in dir: {}", data_path_clone.display());
     let makeblastdb =
         std::process::Command::new("/software/team301/ncbi-blast-2.16.0+/bin/makeblastdb")
             .current_dir(data_path_clone)
@@ -105,7 +107,8 @@ fn run_rmdl_curation_pipeline(
         .unwrap()
         .join(INTERMEDIATE)
         .join("aligned");
-    fs::create_dir_all(aligned_dir)?;
+
+    fs::create_dir_all(aligned_dir.clone())?;
 
     let flank = 2000;
     let maxhitdist = 10000;
@@ -121,6 +124,7 @@ fn run_rmdl_curation_pipeline(
         .unwrap()
         .join(INTERMEDIATE)
         .join("tempBlastOut.txt");
+
     let temp_map_names = matches
         .curation_only
         .clone()
@@ -131,14 +135,6 @@ fn run_rmdl_curation_pipeline(
     eprintln!("The blast output file is {:?}", temp_blast_out);
     eprintln!("The map names file is {:?}", temp_map_names);
 
-    // should we be making the mafft here?
-    // let temp_mafft = matches
-    //     .curation_only
-    //     .clone()
-    //     .unwrap()
-    //     .join(INTERMEDIATE)
-    //     .join("tempMafft.txt");
-
     // the blastdb is the fasta file we created
     // without the extension
     let blastdb = genome_fasta_name.clone();
@@ -148,20 +144,29 @@ fn run_rmdl_curation_pipeline(
         rmdl_library.clone(),
         blastdb,
         temp_blast_out.clone(),
-        temp_map_names,
         hits,
     )?;
 
     // 2. Find hits from assembly (genome) and add original query
     find_hits_from_assembly(
-        matches,
-        blastn_dir,
+        matches.clone(),
+        blastn_dir.clone(),
         maxhitdist,
         minfrac,
         genome_fasta_name,
         temp_blast_out,
         flank,
     )?;
+
+    // 3. Run alignments with MAFFT
+    let mafft_log = matches
+        .curation_only
+        .clone()
+        .unwrap()
+        .join(INTERMEDIATE)
+        .join("tempMafft.txt");
+
+    run_mafft_alignments(&blastn_dir, &aligned_dir, &mafft_log)?;
 
     Ok(())
 }
@@ -172,27 +177,11 @@ fn blast_repeatmasked(
     rmdl_library: PathBuf,
     blastdb: PathBuf,
     temp_blast: PathBuf,
-    temp_map_names: PathBuf,
-    // FIXME: do I need this??
     _hits: i32,
 ) -> Result<()> {
     let mut data_path = matches.curation_only.clone().unwrap();
     data_path.push(DATA);
 
-    // remove the old temp map names file if it's present
-    // FIXME: what is this?
-    if temp_map_names.exists() {
-        fs::remove_file(&temp_map_names)?;
-    }
-
-    // create a file with the name of the temp_map_names
-    // FIXME: what's the point of this??
-    // let temp_map_names_file = fs::File::create(&temp_map_names)?;
-
-    // TODO: check this is okay not to use `current_dir()`
-    // I think as all inputs and outputs have paths specified, this is
-    // okay.
-    //
     // create the blastdb and the rmdl_library variables
     // these are relative to the data path
     let blastdb_data_path = data_path.clone();
@@ -205,20 +194,24 @@ fn blast_repeatmasked(
         rmdl_library, blastdb
     );
 
-    let blastn_command =
-        std::process::Command::new("/software/team301/ncbi-blast-2.16.0+/bin/blastn")
-            .args(["-db", &blastdb.to_string_lossy()])
-            .args(["-query", &rmdl_library.to_string_lossy()])
-            // 7 includes header lines
-            .args(["-outfmt", "7"])
-            .arg("-evalue")
-            .arg("10e-10")
-            .args(["-out", &temp_blast.to_string_lossy()])
-            .spawn()?;
+    let blastn_command = std::process::Command::new(
+        "/software/team301/ncbi-blast-2.16.0+/bin/blastn",
+    )
+    .args(["-db", &blastdb.to_string_lossy()])
+    .args(["-query", &rmdl_library.to_string_lossy()])
+    // 7 includes header lines
+    .args([
+        "-outfmt",
+        "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore",
+    ])
+    .arg("-evalue")
+    .arg("10e-10")
+    .args(["-out", &temp_blast.to_string_lossy()])
+    .status()?;
 
-    eprintln!("blastn command succeeded");
-
-    let _ = blastn_command.wait_with_output()?;
+    if !blastn_command.success() {
+        return Err(Error::new(ErrorKind::GenericCli("BLASTN failed".into())));
+    }
 
     eprintln!("BLAST complete");
 
@@ -237,185 +230,132 @@ fn find_hits_from_assembly(
     temp_blast_out: PathBuf,
     flank: u64,
 ) -> Result<()> {
-    // the path to the genome, and also the blast database
+    // Construct genome FASTA path
     let mut genome_path = matches.curation_only.clone().unwrap();
     genome_path.push(DATA);
     genome_path.push(genome_fasta_name);
 
-    // Remove any already existing fasta files in the blast dir
+    // Load genome into memory once
+    let genome = load_genome(&genome_path)?;
+
+    // Clear existing output
     for entry in fs::read_dir(blastn_dir.clone())? {
         let entry = entry?;
         let path = entry.path();
-        // assuming all fastas end with "fa"
         if path.extension().map(|e| e == "fa").unwrap_or(false)
             || path
                 .components()
-                // this should kill any files with "txt" in them
                 .any(|c| c.as_os_str().to_string_lossy().contains("txt"))
         {
             fs::remove_file(&path)?;
         }
     }
 
-    eprintln!("Going through the BLAST hits");
+    eprintln!("rep :: find_hits_from_assembly :: Processing BLAST hits...");
 
-    // in the original code, they save the assembly to a hash file
-    // while this might be better for small genomes, this will take
-    // up a huge amount of space. I'm opting for iteration but noting
-    // that samtools faidx will probably be a better option
+    // Load and group BLAST hits
+    let blast_hits = BlastRecord::from_file(temp_blast_out)?;
+    for h in &blast_hits.0 {
+        eprintln!(
+            "HIT: qseqid={}, sseqid={}, evalue={}, sstart={}, send={}",
+            h.qseqid, h.sseqid, h.evalue, h.sstart, h.send
+        );
+    }
+    let repeat_ids: HashSet<_> = blast_hits.0.iter().map(|h| h.qseqid.clone()).collect();
 
-    // an iterator over the genome
-    let genome_reader = fasta::Reader::from_file(genome_path.clone())?;
+    for repeat_id in repeat_ids {
+        let outfile = blastn_dir.join(format!("{}.fa", repeat_id));
 
-    for record in genome_reader.records() {
-        let rec = record?;
-        let query_name = rec.id();
+        let mut filtered_hits = blast_hits.filter_by_query_name(&repeat_id);
+        filtered_hits.sort_by_evalue();
+        eprintln!(
+            "Processing query {} with {} hits",
+            repeat_id,
+            filtered_hits.0.len()
+        );
+        let top_hits = filtered_hits.top_n(20).filter_unique_combinations();
 
-        let outfile = blastn_dir.clone().join(format!("{}.fa", query_name));
+        for hit in top_hits.0 {
+            let genome_id = &hit.sseqid;
 
-        // create a new fasta writer with the name of the output as the
-        // id name of the record. We want to save this in the blastn directory
-
-        // the file first, in the blastn dir
-        let fasta_path = blastn_dir.clone().join(format!("{}.fa", query_name));
-        // now the file
-        let fasta_file = fs::File::create(&fasta_path)?;
-        // and the handle
-        let handle = io::BufWriter::new(fasta_file);
-        let mut writer = fasta::Writer::new(handle);
-
-        // write the record to the fasta file
-        writer.write_record(&rec)?;
-
-        // now open up the blast output file
-        let blast_hits = BlastRecord::from_file(temp_blast_out.clone())?;
-        // filter by query name
-        let mut filtered_blast_hits = blast_hits.filter_by_query_name(query_name);
-        // sort blast hits on evalue, and select top 20 records
-        filtered_blast_hits.sort_by_evalue();
-        let top_blast_hits = filtered_blast_hits.top_n(20);
-        let unique_hits = top_blast_hits.clone().filter_unique_combinations();
-
-        for hit in unique_hits.0 {
-            let query = hit.qseqid;
-            let subject = hit.sseqid;
-
-            // count minus and plus strands
-            let (mut minus, mut plus) = (0, 0);
-
-            let top_blast_hits_inner = top_blast_hits.clone();
-
-            // Filter hits for this query-subject pair and sort by alignment positions
-            let mut filtered_hits = top_blast_hits_inner.filter_by_query_subject(&query, &subject);
-            filtered_hits.sort_by_alignment_positions();
-
+            let mut strand_plus = 0;
+            let mut strand_minus = 0;
             let mut start = 0;
             let mut stop = 0;
 
-            for (index, hit) in filtered_hits.0.iter().enumerate() {
-                let hit_start = hit.sstart;
-                let hit_stop = hit.send;
+            let mut per_pair_hits = blast_hits.filter_by_query_subject(&repeat_id, genome_id);
+            per_pair_hits.sort_by_alignment_positions();
 
-                if index == 0 {
-                    if hit_stop > hit_start {
-                        plus += 1;
+            for (i, h) in per_pair_hits.0.iter().enumerate() {
+                let hs = h.sstart;
+                let he = h.send;
+
+                if i == 0 {
+                    start = min(hs, he);
+                    stop = max(hs, he);
+                    if he > hs {
+                        strand_plus += 1;
                     } else {
-                        minus += 1;
-                        start = hit_stop;
-                        stop = hit_start;
+                        strand_minus += 1;
+                    }
+                } else if min(hs, he) - stop < maxhitdist as u64 {
+                    start = min(start, min(hs, he));
+                    stop = max(stop, max(hs, he));
+                    if he > hs {
+                        strand_plus += 1;
+                    } else {
+                        strand_minus += 1;
                     }
                 } else {
-                    // all other lines
-                    // should we merge with the previous line?
-                    if min(hit_start, hit_stop) - max(start, stop) < maxhitdist as u64 {
-                        start = min(min(start, hit_start), min(stop, hit_stop));
-                        stop = max(max(start, hit_start), max(stop, hit_stop));
-
-                        if hit_stop > hit_start {
-                            plus += 1;
-                        } else {
-                            minus += 1;
-                        }
+                    let direction = if strand_plus >= strand_minus {
+                        '+'
                     } else {
-                        // print previous result and save this line to compare with
-                        // find the proper direction
-                        let direction = if plus > minus { '+' } else { '-' };
-                        // check that a majority of the hits has the same direction
-                        if (max(plus, minus) as f64 / (plus + minus) as f64) < minfrac {
-                            eprintln!("Ambiguous orientation of BLAST hits for {}", query);
-                        }
-
-                        // extract sequences and save somewhere
-                        extract_seq(
-                            genome_path.clone(),
-                            &query,
-                            start - flank,
-                            stop + flank,
-                            direction,
-                            outfile.clone(),
-                        )?;
-
-                        // save the current line
-                        // TODO: check this...
-                        if hit_stop > hit_start {
-                            plus = 1;
-                            minus = 0;
-                            start = hit_start;
-                            stop = hit_stop;
-                        } else {
-                            plus = 0;
-                            minus = 1;
-                            start = hit_stop;
-                            stop = hit_start;
-                        }
+                        '-'
+                    };
+                    if (max(strand_plus, strand_minus) as f64 / (strand_plus + strand_minus) as f64)
+                        < minfrac
+                    {
+                        eprintln!("Ambiguous orientation for {} on {}", repeat_id, genome_id);
                     }
-                }
-                // last line not printed yet
-                // do it here:
 
-                let direction = if plus > minus { '+' } else { '-' };
-                // check that a majority of the hits has the same direction
-                if (max(plus, minus) as f64 / (plus + minus) as f64) < minfrac {
-                    eprintln!("Ambiguous orientation of BLAST hits for {}", query);
-                }
+                    extract_seq(
+                        &genome,
+                        genome_id,
+                        start.saturating_sub(flank),
+                        stop + flank,
+                        direction,
+                        outfile.clone(),
+                    )?;
 
-                // extract sequences and save somewhere
-                extract_seq(
-                    genome_path.clone(),
-                    &query,
-                    start - flank,
-                    stop + flank,
-                    direction,
-                    outfile.clone(),
-                )?;
-
-                // look at the current line
-                if hit_stop > hit_start {
-                    plus = 1;
-                    minus = 0;
-                    start = hit_start;
-                    stop = hit_stop;
-                } else {
-                    plus = 0;
-                    minus = 1;
-                    start = hit_stop;
-                    stop = hit_start;
+                    // reset for next cluster
+                    start = min(hs, he);
+                    stop = max(hs, he);
+                    if he > hs {
+                        strand_plus = 1;
+                        strand_minus = 0;
+                    } else {
+                        strand_plus = 0;
+                        strand_minus = 1;
+                    }
                 }
             }
 
-            // last line not printed yet
-            // do it here:
-            let direction = if plus > minus { '+' } else { '-' };
-            // check that a majority of the hits has the same direction
-            if (max(plus, minus) as f64 / (plus + minus) as f64) < minfrac {
-                eprintln!("Ambiguous orientation of BLAST hits for {}", query);
+            // Final segment
+            let direction = if strand_plus >= strand_minus {
+                '+'
+            } else {
+                '-'
+            };
+            if (max(strand_plus, strand_minus) as f64 / (strand_plus + strand_minus) as f64)
+                < minfrac
+            {
+                eprintln!("Ambiguous orientation for {} on {}", repeat_id, genome_id);
             }
 
-            // extract sequences and save somewhere
             extract_seq(
-                genome_path.clone(),
-                &query,
-                start - flank,
+                &genome,
+                genome_id,
+                start.saturating_sub(flank),
                 stop + flank,
                 direction,
                 outfile.clone(),
@@ -426,36 +366,143 @@ fn find_hits_from_assembly(
     Ok(())
 }
 
+fn run_mafft_alignments(blast_dir: &Path, align_dir: &Path, log_path: &Path) -> Result<()> {
+    fs::create_dir_all(align_dir)?;
+
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+
+    for entry in fs::read_dir(blast_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension().map(|e| e == "fa").unwrap_or(false) {
+            if fs::metadata(&path)?.len() == 0 {
+                eprintln!("Skipping empty file: {:?}", path);
+                continue;
+            }
+
+            if let Some(file_name) = path.file_name() {
+                let output = align_dir.join(file_name);
+
+                eprintln!("Running MAFFT on {:?}", file_name);
+
+                let status =
+                    Command::new("/software/team301/mafft-7.525-with-extensions/core/mafft")
+                        .arg("--ep")
+                        .arg("0.0")
+                        .arg("--genafpair")
+                        .arg("--maxiterate")
+                        .arg("1000")
+                        .arg("--thread")
+                        .arg("3")
+                        .arg("--adjustdirection")
+                        .arg(path.to_str().unwrap())
+                        .stdout(fs::File::create(&output)?)
+                        .stderr(log_file.try_clone()?)
+                        .status()?;
+
+                if !status.success() {
+                    return Err(Error::new(ErrorKind::GenericCli(format!(
+                        "MAFFT failed for {:?}",
+                        path
+                    ))));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn load_genome(fasta: &PathBuf) -> Result<HashMap<String, Vec<u8>>> {
+    let mut genome = HashMap::new();
+    let reader = fasta::Reader::from_file(fasta)?;
+    for rec in reader.records() {
+        let rec = rec?;
+        genome.insert(rec.id().to_string(), rec.seq().to_vec());
+    }
+    Ok(genome)
+}
+
 // use an iterator approach to extract sequences
 fn extract_seq(
-    genome_path: PathBuf,
+    genome: &HashMap<String, Vec<u8>>,
     query: &str,
     start: u64,
     stop: u64,
     direction: char,
     outfile: PathBuf,
 ) -> Result<()> {
-    let genome_reader = fasta::Reader::from_file(genome_path)?;
-
-    // Open the FASTA file in append mode
-    let file = OpenOptions::new()
-        .append(true) // Open in append mode
-        .create(true) // Create if it doesn't exist
-        .open(outfile)?;
-
+    let file = OpenOptions::new().append(true).create(true).open(outfile)?;
     let mut writer = Writer::new(BufWriter::new(file));
 
-    // get the sequence we need
-    for record in genome_reader.records() {
-        let rec = record?;
-        if rec.id() == query {
-            let mut substr = rec.seq()[start as usize - 1..stop as usize].to_vec();
-            if direction == '-' {
-                substr = bio::alphabets::dna::revcomp(substr);
-            }
-            writer.write(rec.id(), None, &substr)?;
+    if let Some(seq) = genome.get(query) {
+        let start = start.saturating_sub(1);
+        let end = stop.min(seq.len() as u64);
+        let mut substr = seq[start as usize..end as usize].to_vec();
+        if direction == '-' {
+            substr = bio::alphabets::dna::revcomp(substr);
         }
+        writer.write(query, None, &substr)?;
+    } else {
+        eprintln!("WARN: sequence {} not found in genome", query);
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn test_load_genome() {
+        let path = PathBuf::from("./test/data/genome.fa");
+        let genome = load_genome(&path).unwrap();
+        // one scaffold
+        assert_eq!(genome.len(), 1);
+        assert_eq!(
+            genome["chr1"],
+            b"ATGCGTACGTAGCTAGCTGACTGATCGATCGTAGCTAGCTAGCTGATCGTACGTAGCTAG"
+        );
+    }
+
+    #[test]
+    fn test_extract_seq() {
+        let genome = load_genome(&PathBuf::from("./test/data/genome.fa")).unwrap();
+        let output = PathBuf::from("./test/test_extract_seq.fa");
+
+        extract_seq(&genome, "scaffold1", 1, 16, '+', output.clone()).unwrap();
+
+        let contents = std::fs::read_to_string(output).unwrap();
+        assert!(contents.contains(">scaffold1"));
+        assert!(contents.contains("ACGTACGTACGTACGT"));
+    }
+
+    #[test]
+    fn test_full_pipeline() -> Result<()> {
+        let genome = PathBuf::from("./test/data/genome.fa");
+        let repeat = PathBuf::from("rmdl.fa");
+
+        let args = CliArgs {
+            fasta_file: genome,
+            configure: None,
+            database: None,
+            rmo_threads: 1,
+            rma_threads: 1,
+            rma_only: false,
+            curation_only: Some(PathBuf::from("./test")),
+            curation_rmdl_library: Some(repeat),
+            verbose: false,
+        };
+
+        rm_curation_pipeline(args)?; // your entrypoint
+
+        Ok(())
+    }
 }
