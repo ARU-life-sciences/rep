@@ -5,7 +5,6 @@ pub mod error; // Error types and handling
 pub mod parse_blast; // BLAST outfmt 7 parser
 pub mod repeatmasker; // RepeatMasker wrapper
 pub mod repeatmodeler; // RepeatModeler wrapper
-pub mod rm_curation_pipeline; // Custom post-processing of RepeatModeler output // Abstraction for command execution (for testing or swapping impls)
 
 // Re-export key types and functions
 pub use cli::{parse_args, CliArgs};
@@ -13,7 +12,6 @@ pub use command_runner::{CommandRunner, RealCommandRunner};
 pub use error::{Error, ErrorKind, Result};
 pub use repeatmasker::run_repeatmasker;
 pub use repeatmodeler::run_repeatmodeler;
-pub use rm_curation_pipeline::rm_curation_pipeline;
 
 use std::{
     fs::{self, File},
@@ -45,14 +43,6 @@ pub fn pipeline() -> Result<()> {
 
     // set up the file system at the specified path
     set_up_filesystem(matches.clone())?;
-
-    // if we are only curating the repeats
-    if matches.curation_only.is_some() {
-        // run the curation pipeline and exit
-        eprintln!("Running the curation pipeline...");
-        rm_curation_pipeline(matches.clone())?;
-        return Ok(());
-    }
 
     if matches.rma_only {
         // if we are just running repeatmodeler
@@ -125,11 +115,6 @@ fn check_executables() -> Result<()> {
 //   - RepeatModeler data
 //   - RepeatMasker data
 fn set_up_filesystem(matches: CliArgs) -> Result<()> {
-    // if we are just curating repeats, return early
-    if matches.curation_only.is_some() {
-        return Ok(());
-    }
-
     let mut configure = matches.configure.clone().unwrap();
 
     // make the configuration directory
@@ -225,8 +210,6 @@ mod tests {
             rmo_threads: 1,
             rma_threads: 1,
             rma_only: false,
-            curation_only: None,
-            curation_rmdl_library: None,
             verbose: false,
         };
 

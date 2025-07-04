@@ -20,10 +20,6 @@ pub struct CliArgs {
     pub rma_threads: u8,
     // run repeat masker only
     pub rma_only: bool,
-    // run curation only
-    pub curation_only: Option<PathBuf>,
-    // curation repeat model library
-    pub curation_rmdl_library: Option<PathBuf>,
     // verbose flag
     pub verbose: bool,
 }
@@ -33,7 +29,7 @@ pub fn parse_args() -> Result<CliArgs> {
         .next_line_help(true)
         // not optional
         .arg(
-            arg!(<FASTA> "Input file in fasta format")
+            arg!(<FASTA> "Input file in fasta format. Must be absolute. Just wrap relative path in $(realpath ...).")
                 .value_parser(value_parser!(PathBuf)
                 )
         )
@@ -67,21 +63,10 @@ pub fn parse_args() -> Result<CliArgs> {
             arg!(--rma_only "Run RepeatMasker only. Skip RepeatModeler; currently for development.")
                 .action(ArgAction::SetTrue)
         )
-        .arg(
-            arg!(--curation_only <DIR> "Run the curation pipeline only. Skip RepeatModeler and RepeatMasker. Supply the directory which was used for the `configure` option.")
-                .required_unless_present_any(["rma_only", "database", "configure"])
-                .value_parser(value_parser!(PathBuf))
-        )
-        .arg(
-            arg!(--curation_rmdl_library <FILE> "The name of the file in the data directory which contains the classified repeats in fasta format.")
-                .required_unless_present_any(["rma_only", "database", "configure"])
-                .value_parser(value_parser!(PathBuf))
-        )
         .arg(arg!(--verbose "Print extra debug information").action(ArgAction::SetTrue))
         .get_matches();
 
     // parse the arguments out
-    // FIXME: go through these args more thoroughly
     let fasta = matches
         .get_one::<PathBuf>("FASTA")
         .cloned()
@@ -108,8 +93,6 @@ pub fn parse_args() -> Result<CliArgs> {
         .expect("errored by clap");
 
     let rma_only = matches.get_flag("rma_only");
-    let curation_only = matches.get_one::<PathBuf>("curation_only").cloned();
-    let curation_rmdl_library = matches.get_one::<PathBuf>("curation_rmdl_library").cloned();
 
     let verbose = matches.get_flag("verbose");
 
@@ -121,8 +104,6 @@ pub fn parse_args() -> Result<CliArgs> {
         rmo_threads,
         rma_threads,
         rma_only,
-        curation_only,
-        curation_rmdl_library,
         verbose,
     })
 }
