@@ -57,9 +57,9 @@ pub fn pipeline() -> Result<()> {
     if matches.rma_only {
         // if we are just running repeatmodeler
         // then run it and exit
-        eprintln!("Running RepeatModeler only...");
+        eprintln!("Running RepeatMasker only...");
         let runner = RealCommandRunner;
-        run_repeatmodeler(matches.clone(), &runner)?;
+        run_repeatmasker(matches.clone(), &runner)?;
         return Ok(());
     }
 

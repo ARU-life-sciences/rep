@@ -8,7 +8,7 @@ use std::path::PathBuf;
 // to the fasta file
 #[derive(Debug, Clone)]
 pub struct CliArgs {
-    // path to the fasta file
+    // path to the fasta file. MUST BE ABSOLUTE.
     pub fasta_file: PathBuf,
     // whether to configure file system
     pub configure: Option<PathBuf>,

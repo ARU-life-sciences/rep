@@ -26,6 +26,8 @@ pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result
     let mut build_database =
         Command::new("/software/team301/repeat-annotation/RepeatModeler-2.0.5/BuildDatabase");
 
+    eprintln!("Data path: {:?}", data_path);
+
     build_database
         .current_dir(data_path.clone())
         .arg("-name")

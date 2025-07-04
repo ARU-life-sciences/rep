@@ -38,11 +38,11 @@ pub fn run_repeatmasker(matches: CliArgs, runner: &dyn CommandRunner) -> Result<
             ))),
         };
 
+    eprintln!("Data path: {:?}", data_path);
+
     let mut run_repeat_masker =
         Command::new("/software/team301/repeat-annotation/RepeatMasker/RepeatMasker");
     run_repeat_masker
-        // run in the repeatmasker data subdirectory
-        .current_dir(data_path)
         // the number of threads
         .arg("-pa")
         .arg(matches.rma_threads.to_string())
@@ -55,6 +55,8 @@ pub fn run_repeatmasker(matches: CliArgs, runner: &dyn CommandRunner) -> Result<
         .arg("-a")
         // and repeat densities
         .arg("-excln")
+        .arg("-dir")
+        .arg(&data_path)
         // and the genome file
         .arg(matches.fasta_file);
 

@@ -168,7 +168,7 @@ fn run_rmdl_curation_pipeline(
         .join(INTERMEDIATE)
         .join("tempMafft.txt");
 
-    run_mafft_alignments(&blastn_dir, &aligned_dir, &mafft_log)?;
+    // run_mafft_alignments(&blastn_dir, &aligned_dir, &mafft_log)?;
 
     Ok(())
 }
@@ -279,6 +279,7 @@ fn find_hits_from_assembly(
 
         for hit in top_hits.0 {
             let genome_id = &hit.sseqid;
+            eprintln!("{}", &genome_id);
 
             let mut strand_plus = 0;
             let mut strand_minus = 0;
@@ -456,6 +457,7 @@ fn extract_seq(
         .create(true)
         .open(outfile.clone())
         .with_context(|| format!("Failed to open file {:?}", outfile))?;
+
     let mut writer = Writer::new(BufWriter::new(file));
 
     if let Some(seq) = genome.get(query) {
@@ -465,6 +467,7 @@ fn extract_seq(
         if direction == '-' {
             substr = bio::alphabets::dna::revcomp(substr);
         }
+        eprintln!("fasta id: {}", query);
         writer.write(query, None, &substr)?;
     } else {
         eprintln!("WARN: sequence {} not found in genome", query);
