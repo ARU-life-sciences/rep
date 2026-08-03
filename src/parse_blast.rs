@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::Result;
+use crate::{Error, ErrorKind, Result};
 use csv::ReaderBuilder;
 
 // use the CSV reader builder to parse
@@ -27,30 +27,36 @@ pub struct BlastRecord {
 
 impl BlastRecord {
     fn from_row(row: &csv::StringRecord) -> Result<Self> {
-        let r = BlastRecord {
-            // TODO: these unwraps should be fine... ideally they should
-            // be handled
-            qseqid: row.get(0).unwrap().to_string(),
-            sseqid: row.get(1).unwrap().to_string(),
-            pident: row.get(2).unwrap().parse()?,
-            length: row.get(3).unwrap().parse()?,
-            mismatch: row.get(4).unwrap().parse()?,
-            gapopen: row.get(5).unwrap().parse()?,
-            qstart: row.get(6).unwrap().parse()?,
-            qend: row.get(7).unwrap().parse()?,
-            sstart: row.get(8).unwrap().parse()?,
-            send: row.get(9).unwrap().parse()?,
-            evalue: row.get(10).unwrap().parse()?,
-            bitscore: row.get(11).unwrap().parse()?,
-        };
+        if row.len() != 12 {
+            return Err(Error::new(ErrorKind::GenericCli(format!(
+                "Expected 12 BLAST columns, found {} in record {:?}",
+                row.len(),
+                row
+            ))));
+        }
 
-        Ok(r)
+        Ok(BlastRecord {
+            qseqid: row[0].to_string(),
+            sseqid: row[1].to_string(),
+            pident: row[2].parse()?,
+            length: row[3].parse()?,
+            mismatch: row[4].parse()?,
+            gapopen: row[5].parse()?,
+            qstart: row[6].parse()?,
+            qend: row[7].parse()?,
+            sstart: row[8].parse()?,
+            send: row[9].parse()?,
+            evalue: row[10].parse()?,
+            bitscore: row[11].parse()?,
+        })
     }
 
     pub fn from_file(path: PathBuf) -> Result<BlastTable> {
         let mut rdr = ReaderBuilder::new()
             .delimiter(b'\t')
             .has_headers(false)
+            .comment(Some(b'#'))
+            .flexible(true)
             .from_path(path)?;
 
         let mut records = Vec::new();
@@ -119,5 +125,41 @@ impl BlastTable {
             }
         }
         BlastTable(unique)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn parses_commented_outfmt_7() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("blast.tsv");
+        fs::write(
+            &path,
+            "# BLASTN 2.15.0+\n# Fields: query id, subject id\nquery1\tchr1\t100.0\t29\t0\t0\t1\t29\t19\t47\t4.6e-14\t54.7\n# 1 hits found\n",
+        )
+        .unwrap();
+
+        let table = BlastRecord::from_file(path).unwrap();
+        assert_eq!(table.0.len(), 1);
+        assert_eq!(table.0[0].qseqid, "query1");
+        assert_eq!(table.0[0].sseqid, "chr1");
+    }
+
+    #[test]
+    fn rejects_short_rows_without_panicking() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("blast.tsv");
+        fs::write(&path, "query1\tchr1\t100.0\n").unwrap();
+
+        let error = match BlastRecord::from_file(path) {
+            Ok(_) => panic!("short BLAST row unexpectedly parsed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("Expected 12 BLAST columns"));
     }
 }

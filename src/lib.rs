@@ -14,8 +14,10 @@ pub use repeatmasker::run_repeatmasker;
 pub use repeatmodeler::run_repeatmodeler;
 
 use std::{
+    env,
+    ffi::{OsStr, OsString},
     fs::{self, File},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -24,10 +26,13 @@ const INTERMEDIATE: &str = "intermediate";
 const RESULTS: &str = "results";
 const PIPELINE_SCRIPTS: &str = "pipeline_scripts";
 const DATA: &str = "data";
+const REPEATMASKER_ENV: &str = "REP_REPEATMASKER";
+const REPEATMODELER_ENV: &str = "REP_REPEATMODELER";
+const BUILD_DATABASE_ENV: &str = "REP_BUILD_DATABASE";
 
 // Utility to create a named subdirectory within a base path
-fn make_subdir(base: &PathBuf, name: &str) -> Result<()> {
-    let mut p = base.clone();
+fn make_subdir(base: &Path, name: &str) -> Result<()> {
+    let mut p = base.to_path_buf();
     p.push(name);
     fs::create_dir_all(&p)?;
     Ok(())
@@ -36,13 +41,13 @@ fn make_subdir(base: &PathBuf, name: &str) -> Result<()> {
 // Main entry point for running the full pipeline
 pub fn pipeline() -> Result<()> {
     // now parse the args
-    let matches = parse_args()?;
+    let mut matches = parse_args()?;
 
     // check whether the executables are there first
-    check_executables()?;
+    check_executables(&matches)?;
 
     // set up the file system at the specified path
-    set_up_filesystem(matches.clone())?;
+    matches.fasta_file = set_up_filesystem(matches.clone())?;
 
     if matches.rma_only {
         // if we are just running repeatmodeler
@@ -72,36 +77,67 @@ pub fn pipeline() -> Result<()> {
 // createRepeatLandscape.pl
 // rmOut2Fasta.pl
 // rmOutToGFF3.pl
-fn check_executables() -> Result<()> {
-    // automate the checking...
+fn check_executables(matches: &CliArgs) -> Result<()> {
     eprintln!("Checking for required executables...");
 
-    fn check_executables_inner(exec: String) -> Result<()> {
-        match Command::new(exec.clone()).output() {
-            Ok(_) => eprintln!("{} found", exec),
-            Err(err) => {
-                let error_kind = err.kind();
+    let mut required = vec![(REPEATMASKER_ENV, "RepeatMasker")];
+    if !matches.rma_only {
+        required.push((REPEATMODELER_ENV, "RepeatModeler"));
+        required.push((BUILD_DATABASE_ENV, "BuildDatabase"));
+    }
 
-                // TODO: move this printing to the error module
-                eprintln!("{} not found", exec);
-                eprintln!("Please install RepeatMasker/RepeatModeler and add it to your PATH");
-                eprintln!("https://www.repeatmasker.org/");
-                return Err(Error::new(ErrorKind::IO(error_kind)));
+    for (env_var, executable) in required {
+        let path = find_executable(env_var, executable)?;
+        eprintln!("{} found at {}", executable, path.display());
+    }
+    Ok(())
+}
+
+fn configured_executable(env_var: &str, default: &str) -> OsString {
+    env::var_os(env_var).unwrap_or_else(|| OsString::from(default))
+}
+
+fn find_executable(env_var: &str, default: &str) -> Result<PathBuf> {
+    let configured = configured_executable(env_var, default);
+    let configured_path = Path::new(&configured);
+
+    if configured_path.components().count() > 1 {
+        if is_executable(configured_path) {
+            return Ok(configured_path.to_path_buf());
+        }
+        return Err(missing_executable(env_var, &configured));
+    }
+
+    if let Some(path) = env::var_os("PATH") {
+        for directory in env::split_paths(&path) {
+            let candidate = directory.join(&configured);
+            if is_executable(&candidate) {
+                return Ok(candidate);
             }
         }
-        Ok(())
     }
 
-    // iterate over the executables
-    // and run check_executables_inner
-    for exec in [
-        "/software/team301/repeat-annotation/RepeatMasker/RepeatMasker",
-        "/software/team301/repeat-annotation/RepeatModeler-2.0.5/RepeatModeler",
-    ] {
-        check_executables_inner(exec.to_string())?;
-    }
+    Err(missing_executable(env_var, &configured))
+}
 
-    Ok(())
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn missing_executable(env_var: &str, executable: &OsStr) -> Error {
+    Error::new(ErrorKind::GenericCli(format!(
+        "Required executable '{}' was not found or is not executable; add it to PATH or set {env_var}",
+        executable.to_string_lossy()
+    )))
 }
 
 // a function to set up the file system
@@ -114,8 +150,12 @@ fn check_executables() -> Result<()> {
 // 4. data
 //   - RepeatModeler data
 //   - RepeatMasker data
-fn set_up_filesystem(matches: CliArgs) -> Result<()> {
-    let mut configure = matches.configure.clone().unwrap();
+fn set_up_filesystem(matches: CliArgs) -> Result<PathBuf> {
+    let mut configure = matches.configure.clone().ok_or_else(|| {
+        Error::new(ErrorKind::GenericCli(
+            "A configuration directory is required".into(),
+        ))
+    })?;
 
     // make the configuration directory
     // and all the subdirectories
@@ -127,10 +167,12 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
     configure.push(DATA);
 
     // check the ending of the file.
-    match matches.fasta_file.to_string_lossy().ends_with("gz") {
+    match matches.fasta_file.extension().and_then(|ext| ext.to_str()) == Some("gz") {
         true => {
             // the final component of the fasta file name here
-            let base_fasta_name = matches.fasta_file.file_name().unwrap();
+            let base_fasta_name = matches.fasta_file.file_name().ok_or_else(|| {
+                Error::new(ErrorKind::GenericCli("FASTA path has no filename".into()))
+            })?;
             let fasta_name = base_fasta_name.to_string_lossy();
             // FIXME: the following line will panic if the file is mal-formatted
             let new_fasta_name = fasta_name.strip_suffix(".gz").ok_or_else(|| {
@@ -141,7 +183,7 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
 
             configure.push(new_fasta_name);
             // add the new command here
-            let gunzip_process = Command::new("gunzip")
+            let mut gunzip_process = Command::new("gunzip")
                 .arg("-c")
                 .arg(matches.fasta_file.clone())
                 .stdout(Stdio::piped())
@@ -152,28 +194,39 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
             // as > cannot be used in Command.
             let mut f = File::create(&configure)?;
 
-            // FIXME: remove this unwrap
-            std::io::copy(&mut gunzip_process.stdout.unwrap(), &mut f)?;
+            let mut stdout = gunzip_process.stdout.take().ok_or_else(|| {
+                Error::new(ErrorKind::GenericCli(
+                    "Could not capture gunzip output".into(),
+                ))
+            })?;
+            std::io::copy(&mut stdout, &mut f)?;
+            let status = gunzip_process.wait()?;
+            if !status.success() {
+                return Err(Error::new(ErrorKind::GenericCli(format!(
+                    "gunzip failed with status {status}"
+                ))));
+            }
         }
         false => {
-            // else use cp
-            // FIXME: remove this unwrap
-            let base_fasta_name = matches.fasta_file.file_name().unwrap();
+            let base_fasta_name = matches.fasta_file.file_name().ok_or_else(|| {
+                Error::new(ErrorKind::GenericCli("FASTA path has no filename".into()))
+            })?;
             configure.push(base_fasta_name);
-            Command::new("cp")
-                .arg("-r")
-                .arg(matches.fasta_file.clone())
-                .arg(&configure)
-                .spawn()?
-                .wait_with_output()?;
+            fs::copy(&matches.fasta_file, &configure)?;
         }
     }
+
+    let staged_fasta = configure.clone();
 
     // make separate subdir for RepeatMasker and RepeatModeler
     // within the data directory.
     eprintln!("Making repeatmasker and repeatmodeler dirs...");
     // do it again to make sure
-    let mut configure = matches.configure.clone().unwrap();
+    let mut configure = matches.configure.ok_or_else(|| {
+        Error::new(ErrorKind::GenericCli(
+            "A configuration directory is required".into(),
+        ))
+    })?;
     configure.push(DATA);
     configure.push("repeatmasker");
     fs::create_dir_all(configure.clone())?;
@@ -188,7 +241,7 @@ fn set_up_filesystem(matches: CliArgs) -> Result<()> {
         matches.fasta_file.to_string_lossy()
     );
 
-    Ok(())
+    Ok(staged_fasta)
 }
 
 #[cfg(test)]

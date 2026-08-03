@@ -2,7 +2,10 @@
 // 1. create the database for the genome using BuildDatabase
 // 2. run RepeatModeler on the database
 
-use crate::{CliArgs, CommandRunner, Result, DATA};
+use crate::{
+    command_runner::run_checked, configured_executable, CliArgs, CommandRunner, Result,
+    BUILD_DATABASE_ENV, DATA, REPEATMODELER_ENV,
+};
 use std::process::Command;
 
 pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result<()> {
@@ -24,7 +27,7 @@ pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result
 
     // build the database here
     let mut build_database =
-        Command::new("/software/team301/repeat-annotation/RepeatModeler-2.0.5/BuildDatabase");
+        Command::new(configured_executable(BUILD_DATABASE_ENV, "BuildDatabase"));
 
     eprintln!("Data path: {:?}", data_path);
 
@@ -36,33 +39,19 @@ pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result
         .arg(".")
         .arg(matches.fasta_file);
 
-    let out = runner.run(&mut build_database)?;
-
-    if !out.status.success() {
-        return Err(crate::Error::new(crate::ErrorKind::GenericCli(format!(
-            "BuildDatabase failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ))));
-    }
+    run_checked(runner, &mut build_database, "BuildDatabase")?;
 
     let mut run_repeat_modeler =
-        Command::new("/software/team301/repeat-annotation/RepeatModeler-2.0.5/RepeatModeler");
+        Command::new(configured_executable(REPEATMODELER_ENV, "RepeatModeler"));
 
     run_repeat_modeler
         .current_dir(data_path)
         .arg("-database")
         .arg(matches.database.unwrap())
         .arg("-threads")
-        .arg(matches.rmo_threads.to_string())
-        .spawn()?;
+        .arg(matches.rmo_threads.to_string());
 
-    let out = runner.run(&mut run_repeat_modeler)?;
-    if !out.status.success() {
-        return Err(crate::Error::new(crate::ErrorKind::GenericCli(format!(
-            "RepeatModeler failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ))));
-    }
+    run_checked(runner, &mut run_repeat_modeler, "RepeatModeler")?;
 
     // everything seems to be in the 'data' directory now
     // so we will have to move things around afterwards.
@@ -109,8 +98,6 @@ mod tests {
             rmo_threads: 1,
             rma_threads: 1,
             rma_only: false,
-            curation_only: None,
-            curation_rmdl_library: None,
             verbose: false,
         };
 

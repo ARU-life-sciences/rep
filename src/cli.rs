@@ -36,8 +36,7 @@ pub fn parse_args() -> Result<CliArgs> {
         // not optional
         .arg(
             arg!(-c --configure <CONFIG_PATH> "Configure the file system - and create the required directories.")
-                // not required unless you only want to run RepeatMasker
-                .required_unless_present_any(["rma_only", "curation_only"])
+                .required(true)
                 .value_parser(value_parser!(PathBuf)),
         )
         .arg(
