@@ -9,16 +9,12 @@ use crate::{
 
 pub fn run_repeatmasker(matches: CliArgs, runner: &dyn CommandRunner) -> Result<()> {
     // get the data path again
-    let mut data_path = matches.configure.clone().unwrap();
+    let mut data_path = matches.configure_path()?.to_path_buf();
     data_path.push(DATA);
     // and go into the repeatmasker dir
     data_path.push("repeatmasker");
 
-    let mut repeatmodeler_path = matches.configure.clone().ok_or_else(|| {
-        Error::new(ErrorKind::GenericCli(
-            "A configuration directory is required".into(),
-        ))
-    })?;
+    let mut repeatmodeler_path = matches.configure_path()?.to_path_buf();
     repeatmodeler_path.push(DATA);
     repeatmodeler_path.push("repeatmodeler");
     let full_consensi_path = find_consensus_library(&repeatmodeler_path)?;

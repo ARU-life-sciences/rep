@@ -17,7 +17,8 @@ pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result
 
     // we have all of our directories set up.
     // we need to specify the directory with the data in it
-    let mut data_path = matches.configure.clone().unwrap();
+    let mut data_path = matches.configure_path()?.to_path_buf();
+    let database = matches.database_name()?.to_owned();
     data_path.push(DATA);
     // and go into the repeatmodeler dir
     data_path.push("repeatmodeler");
@@ -34,7 +35,7 @@ pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result
     build_database
         .current_dir(data_path.clone())
         .arg("-name")
-        .arg(matches.database.clone().unwrap())
+        .arg(&database)
         .arg("-dir")
         .arg(".")
         .arg(matches.fasta_file);
@@ -47,7 +48,7 @@ pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result
     run_repeat_modeler
         .current_dir(data_path)
         .arg("-database")
-        .arg(matches.database.unwrap())
+        .arg(&database)
         .arg("-threads")
         .arg(matches.rmo_threads.to_string());
 

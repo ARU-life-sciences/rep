@@ -151,11 +151,7 @@ fn missing_executable(env_var: &str, executable: &OsStr) -> Error {
 //   - RepeatModeler data
 //   - RepeatMasker data
 fn set_up_filesystem(matches: CliArgs) -> Result<PathBuf> {
-    let mut configure = matches.configure.clone().ok_or_else(|| {
-        Error::new(ErrorKind::GenericCli(
-            "A configuration directory is required".into(),
-        ))
-    })?;
+    let mut configure = matches.configure_path()?.to_path_buf();
 
     // make the configuration directory
     // and all the subdirectories
@@ -222,11 +218,7 @@ fn set_up_filesystem(matches: CliArgs) -> Result<PathBuf> {
     // within the data directory.
     eprintln!("Making repeatmasker and repeatmodeler dirs...");
     // do it again to make sure
-    let mut configure = matches.configure.ok_or_else(|| {
-        Error::new(ErrorKind::GenericCli(
-            "A configuration directory is required".into(),
-        ))
-    })?;
+    let mut configure = matches.configure_path()?.to_path_buf();
     configure.push(DATA);
     configure.push("repeatmasker");
     fs::create_dir_all(configure.clone())?;

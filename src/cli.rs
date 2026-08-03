@@ -1,7 +1,7 @@
 use clap::{arg, command, value_parser, ArgAction};
 
 use crate::{error::Result, Error, ErrorKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // a struct to contain all the CliArgs
 // at the moment we only want the path
@@ -22,6 +22,24 @@ pub struct CliArgs {
     pub rma_only: bool,
     // verbose flag
     pub verbose: bool,
+}
+
+impl CliArgs {
+    pub fn configure_path(&self) -> Result<&Path> {
+        self.configure.as_deref().ok_or_else(|| {
+            Error::new(ErrorKind::GenericCli(
+                "A configuration directory is required".into(),
+            ))
+        })
+    }
+
+    pub fn database_name(&self) -> Result<&str> {
+        self.database.as_deref().ok_or_else(|| {
+            Error::new(ErrorKind::GenericCli(
+                "A database name is required to run RepeatModeler".into(),
+            ))
+        })
+    }
 }
 
 pub fn parse_args() -> Result<CliArgs> {
