@@ -94,6 +94,7 @@ mod tests {
 
         let args = CliArgs {
             fasta_file: fasta,
+            curation_target: None,
             configure: Some(tmp.path().to_path_buf()),
             database: Some("mockdb".to_string()),
             rmo_threads: 1,

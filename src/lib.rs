@@ -261,6 +261,7 @@ mod tests {
 
         let args = CliArgs {
             fasta_file: fasta_path,
+            curation_target: None,
             configure: Some(config_path.clone()),
             database: Some("genomedb".into()),
             rmo_threads: 1,

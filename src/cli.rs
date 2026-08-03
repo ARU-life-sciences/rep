@@ -8,8 +8,10 @@ use std::path::{Path, PathBuf};
 // to the fasta file
 #[derive(Debug, Clone)]
 pub struct CliArgs {
-    // path to the fasta file. MUST BE ABSOLUTE.
+    // path to the primary FASTA file
     pub fasta_file: PathBuf,
+    // optional separate genome searched during consensus curation
+    pub curation_target: Option<PathBuf>,
     // whether to configure file system
     pub configure: Option<PathBuf>,
     // the name of the database for BuildDatabase
@@ -50,6 +52,10 @@ pub fn parse_args() -> Result<CliArgs> {
             arg!(<FASTA> "Input file in FASTA format.")
                 .value_parser(value_parser!(PathBuf)
                 )
+        )
+        .arg(
+            arg!(--curation_target <CURATION_FASTA> "Optional separate FASTA searched for consensus copies.")
+                .value_parser(value_parser!(PathBuf)),
         )
         // not optional
         .arg(
@@ -96,6 +102,16 @@ pub fn parse_args() -> Result<CliArgs> {
         ))));
     }
 
+    let curation_target = matches.get_one::<PathBuf>("curation_target").cloned();
+    if let Some(path) = &curation_target {
+        if !path.is_file() {
+            return Err(Error::new(ErrorKind::GenericCli(format!(
+                "Curation target is not a regular file: {}",
+                path.display()
+            ))));
+        }
+    }
+
     let configure = matches.get_one::<PathBuf>("configure").cloned();
 
     let database = matches.get_one::<String>("database").cloned();
@@ -117,6 +133,7 @@ pub fn parse_args() -> Result<CliArgs> {
     // collect the arguments
     Ok(CliArgs {
         fasta_file: fasta,
+        curation_target,
         configure,
         database,
         rmo_threads,

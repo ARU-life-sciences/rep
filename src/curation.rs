@@ -1,8 +1,8 @@
 use std::{
     collections::{BTreeMap, HashSet},
-    fs,
-    path::Path,
-    process::Command,
+    fs::{self, File},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 use bio::{alphabets::dna, io::fasta};
@@ -78,6 +78,12 @@ pub fn run_curation_with_config(
     fs::create_dir_all(&blast_hits_path)?;
     fs::create_dir_all(&alignment_path)?;
 
+    let target_source = matches
+        .curation_target
+        .as_deref()
+        .unwrap_or(&matches.fasta_file);
+    let target_fasta = prepare_target_fasta(target_source, &curation_path)?;
+
     let repeatmodeler_path = configure.join(DATA).join("repeatmodeler");
     let consensus_path = find_consensus_library(&repeatmodeler_path)?;
     let database_path = curation_path.join("genome");
@@ -85,7 +91,7 @@ pub fn run_curation_with_config(
     let mut makeblastdb = Command::new(configured_executable(MAKEBLASTDB_ENV, "makeblastdb"));
     makeblastdb
         .arg("-in")
-        .arg(&matches.fasta_file)
+        .arg(&target_fasta)
         .arg("-dbtype")
         .arg("nucl")
         .arg("-out")
@@ -116,7 +122,7 @@ pub fn run_curation_with_config(
         .iter()
         .map(|record| record.sseqid.clone())
         .collect::<HashSet<_>>();
-    let genome = read_fasta(&matches.fasta_file, Some(&subjects))?;
+    let genome = read_fasta(&target_fasta, Some(&subjects))?;
     let consensus = read_fasta(&consensus_path, None)?;
 
     let mut output_names = HashSet::new();
@@ -149,6 +155,36 @@ pub fn run_curation_with_config(
     }
 
     Ok(())
+}
+
+fn prepare_target_fasta(source: &Path, curation_path: &Path) -> Result<PathBuf> {
+    if source.extension().and_then(|extension| extension.to_str()) != Some("gz") {
+        return Ok(source.to_path_buf());
+    }
+
+    let target = curation_path.join("curation_target.fa");
+    let mut child = Command::new("gunzip")
+        .arg("-c")
+        .arg(source)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        Error::new(ErrorKind::GenericCli(
+            "Could not capture gunzip output for curation target".into(),
+        ))
+    })?;
+    let mut output_file = File::create(&target)?;
+    std::io::copy(&mut stdout, &mut output_file)?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let _ = fs::remove_file(&target);
+        return Err(Error::new(ErrorKind::GenericCli(format!(
+            "Could not decompress curation target: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))));
+    }
+    Ok(target)
 }
 
 fn read_fasta(
@@ -368,6 +404,7 @@ mod tests {
 
         let args = CliArgs {
             fasta_file: genome,
+            curation_target: None,
             configure: Some(temp.path().to_path_buf()),
             database: Some("genome".into()),
             rmo_threads: 1,
