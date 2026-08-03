@@ -46,7 +46,7 @@ pub fn run_repeatmasker(matches: CliArgs, runner: &dyn CommandRunner) -> Result<
     Ok(())
 }
 
-fn find_consensus_library(repeatmodeler_path: &Path) -> Result<PathBuf> {
+pub(crate) fn find_consensus_library(repeatmodeler_path: &Path) -> Result<PathBuf> {
     let mut matches = Vec::new();
     for entry in WalkDir::new(repeatmodeler_path).follow_links(false) {
         let entry = entry.map_err(|error| {

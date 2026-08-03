@@ -1,6 +1,7 @@
 // Public modules used across the CLI tool
 pub mod cli; // Command-line argument parsing
 pub mod command_runner;
+pub mod curation;
 pub mod error; // Error types and handling
 pub mod parse_blast; // BLAST outfmt 7 parser
 pub mod repeatmasker; // RepeatMasker wrapper
@@ -9,6 +10,7 @@ pub mod repeatmodeler; // RepeatModeler wrapper
 // Re-export key types and functions
 pub use cli::{parse_args, CliArgs};
 pub use command_runner::{CommandRunner, RealCommandRunner};
+pub use curation::{run_curation, run_curation_with_config, CurationConfig};
 pub use error::{Error, ErrorKind, Result};
 pub use repeatmasker::run_repeatmasker;
 pub use repeatmodeler::run_repeatmodeler;
@@ -29,6 +31,9 @@ const DATA: &str = "data";
 const REPEATMASKER_ENV: &str = "REP_REPEATMASKER";
 const REPEATMODELER_ENV: &str = "REP_REPEATMODELER";
 const BUILD_DATABASE_ENV: &str = "REP_BUILD_DATABASE";
+const MAKEBLASTDB_ENV: &str = "REP_MAKEBLASTDB";
+const BLASTN_ENV: &str = "REP_BLASTN";
+const MAFFT_ENV: &str = "REP_MAFFT";
 
 // Utility to create a named subdirectory within a base path
 fn make_subdir(base: &Path, name: &str) -> Result<()> {
@@ -63,6 +68,9 @@ pub fn pipeline() -> Result<()> {
     let runner = RealCommandRunner;
     run_repeatmodeler(matches.clone(), &runner)?;
 
+    eprintln!("Running consensus curation...");
+    run_curation(matches.clone(), &runner)?;
+
     // and also run repeatmasker
     eprintln!("Running RepeatMasker...");
     run_repeatmasker(matches.clone(), &runner)?;
@@ -84,6 +92,9 @@ fn check_executables(matches: &CliArgs) -> Result<()> {
     if !matches.rma_only {
         required.push((REPEATMODELER_ENV, "RepeatModeler"));
         required.push((BUILD_DATABASE_ENV, "BuildDatabase"));
+        required.push((MAKEBLASTDB_ENV, "makeblastdb"));
+        required.push((BLASTN_ENV, "blastn"));
+        required.push((MAFFT_ENV, "mafft"));
     }
 
     for (env_var, executable) in required {
