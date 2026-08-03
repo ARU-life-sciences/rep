@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::Path};
 
 use crate::{Error, ErrorKind, Result};
 use csv::ReaderBuilder;
@@ -9,7 +9,7 @@ use csv::ReaderBuilder;
 // and implementations to parse
 // column headers are: qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BlastRecord {
     pub qseqid: String,
     pub sseqid: String,
@@ -51,7 +51,7 @@ impl BlastRecord {
         })
     }
 
-    pub fn from_file(path: PathBuf) -> Result<BlastTable> {
+    pub fn from_file(path: impl AsRef<Path>) -> Result<BlastTable> {
         let mut rdr = ReaderBuilder::new()
             .delimiter(b'\t')
             .has_headers(false)
@@ -69,13 +69,35 @@ impl BlastRecord {
     }
 }
 
-#[derive(Clone)]
-pub struct BlastTable(pub Vec<BlastRecord>);
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlastTable(Vec<BlastRecord>);
+
+impl From<Vec<BlastRecord>> for BlastTable {
+    fn from(records: Vec<BlastRecord>) -> Self {
+        Self(records)
+    }
+}
 
 impl BlastTable {
-    pub fn sort_by_alignment_positions(&mut self) {
+    pub fn records(&self) -> &[BlastRecord] {
+        &self.0
+    }
+
+    pub fn into_records(self) -> Vec<BlastRecord> {
         self.0
-            .sort_by(|a, b| a.sstart.partial_cmp(&b.sstart).unwrap());
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[deprecated(note = "use sort_by_sequence_start")]
+    pub fn sort_by_alignment_positions(&mut self) {
+        self.sort_by_sequence_start();
     }
 
     pub fn filter_by_query_subject(&self, query: &str, subject: &str) -> Self {
@@ -99,14 +121,11 @@ impl BlastTable {
     }
 
     pub fn sort_by_evalue(&mut self) {
-        // FIXME: sort out this unwrap
-        self.0
-            .sort_by(|a, b| a.evalue.partial_cmp(&b.evalue).unwrap());
+        self.0.sort_by(|a, b| a.evalue.total_cmp(&b.evalue));
     }
 
     pub fn sort_by_sequence_start(&mut self) {
-        self.0
-            .sort_by(|a, b| a.sstart.partial_cmp(&b.sstart).unwrap());
+        self.0.sort_by_key(|record| record.sstart);
     }
 
     pub fn top_n(self, n: usize) -> Self {
@@ -115,16 +134,13 @@ impl BlastTable {
 
     // Extract unique combinations of query and subject
     pub fn filter_unique_combinations(self) -> Self {
-        let mut unique: Vec<BlastRecord> = Vec::new();
-        for record in self.0 {
-            if !unique
-                .iter()
-                .any(|x| x.qseqid == record.qseqid && x.sseqid == record.sseqid)
-            {
-                unique.push(record);
-            }
-        }
-        BlastTable(unique)
+        let mut seen = HashSet::new();
+        let records = self
+            .0
+            .into_iter()
+            .filter(|record| seen.insert((record.qseqid.clone(), record.sseqid.clone())))
+            .collect();
+        BlastTable(records)
     }
 }
 
@@ -144,10 +160,10 @@ mod tests {
         )
         .unwrap();
 
-        let table = BlastRecord::from_file(path).unwrap();
-        assert_eq!(table.0.len(), 1);
-        assert_eq!(table.0[0].qseqid, "query1");
-        assert_eq!(table.0[0].sseqid, "chr1");
+        let table = BlastRecord::from_file(&path).unwrap();
+        assert_eq!(table.len(), 1);
+        assert_eq!(table.records()[0].qseqid, "query1");
+        assert_eq!(table.records()[0].sseqid, "chr1");
     }
 
     #[test]

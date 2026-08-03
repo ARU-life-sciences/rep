@@ -47,7 +47,7 @@ pub fn parse_args() -> Result<CliArgs> {
         .next_line_help(true)
         // not optional
         .arg(
-            arg!(<FASTA> "Input file in fasta format. Must be absolute. Just wrap relative path in $(realpath ...).")
+            arg!(<FASTA> "Input file in FASTA format.")
                 .value_parser(value_parser!(PathBuf)
                 )
         )
@@ -89,10 +89,11 @@ pub fn parse_args() -> Result<CliArgs> {
         .cloned()
         .expect("errored by clap");
 
-    if !fasta.exists() {
-        return Err(Error::new(ErrorKind::GenericCli(
-            "FASTA file not found".into(),
-        )));
+    if !fasta.is_file() {
+        return Err(Error::new(ErrorKind::GenericCli(format!(
+            "FASTA path is not a regular file: {}",
+            fasta.display()
+        ))));
     }
 
     let configure = matches.get_one::<PathBuf>("configure").cloned();
