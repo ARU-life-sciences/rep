@@ -100,6 +100,7 @@ mod tests {
             rmo_threads: 1,
             rma_threads: 1,
             rma_only: false,
+            curation_only: false,
             verbose: false,
         };
 

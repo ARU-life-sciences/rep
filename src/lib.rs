@@ -51,6 +51,13 @@ pub fn pipeline() -> Result<()> {
     // check whether the executables are there first
     check_executables(&matches)?;
 
+    if matches.curation_only {
+        eprintln!("Running consensus curation only...");
+        let runner = RealCommandRunner;
+        run_curation(matches, &runner)?;
+        return Ok(());
+    }
+
     // set up the file system at the specified path
     matches.fasta_file = set_up_filesystem(matches.clone())?;
 
@@ -87,6 +94,18 @@ pub fn pipeline() -> Result<()> {
 // rmOutToGFF3.pl
 fn check_executables(matches: &CliArgs) -> Result<()> {
     eprintln!("Checking for required executables...");
+
+    if matches.curation_only {
+        for (env_var, executable) in [
+            (MAKEBLASTDB_ENV, "makeblastdb"),
+            (BLASTN_ENV, "blastn"),
+            (MAFFT_ENV, "mafft"),
+        ] {
+            let path = find_executable(env_var, executable)?;
+            eprintln!("{} found at {}", executable, path.display());
+        }
+        return Ok(());
+    }
 
     let mut required = vec![(REPEATMASKER_ENV, "RepeatMasker")];
     if !matches.rma_only {
@@ -267,6 +286,7 @@ mod tests {
             rmo_threads: 1,
             rma_threads: 1,
             rma_only: false,
+            curation_only: false,
             verbose: false,
         };
 

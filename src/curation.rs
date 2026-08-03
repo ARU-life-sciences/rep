@@ -120,7 +120,12 @@ pub fn run_curation_with_config(
     let subjects = blast_table
         .records()
         .iter()
-        .map(|record| record.sseqid.clone())
+        .flat_map(|record| {
+            [
+                record.sseqid.clone(),
+                normalized_sequence_id(&record.sseqid).to_owned(),
+            ]
+        })
         .collect::<HashSet<_>>();
     let genome = read_fasta(&target_fasta, Some(&subjects))?;
     let consensus = read_fasta(&consensus_path, None)?;
@@ -210,6 +215,16 @@ fn read_fasta(
     Ok(sequences)
 }
 
+fn normalized_sequence_id(id: &str) -> &str {
+    let mut fields = id.split('|');
+    match (fields.next(), fields.next()) {
+        (Some("emb" | "gb" | "dbj" | "ref" | "lcl"), Some(accession)) if !accession.is_empty() => {
+            accession
+        }
+        _ => id,
+    }
+}
+
 fn extract_related_copies(
     query_id: &str,
     mut hits: BlastTable,
@@ -225,11 +240,14 @@ fn extract_related_copies(
 
     let mut copies = Vec::new();
     for (subject, subject_hits) in by_subject {
-        let sequence = genome.get(&subject).ok_or_else(|| {
-            Error::new(ErrorKind::GenericCli(format!(
-                "BLAST subject {subject} for query {query_id} is absent from the genome FASTA"
-            )))
-        })?;
+        let sequence = genome
+            .get(&subject)
+            .or_else(|| genome.get(normalized_sequence_id(&subject)))
+            .ok_or_else(|| {
+                Error::new(ErrorKind::GenericCli(format!(
+                    "BLAST subject {subject} for query {query_id} is absent from the genome FASTA"
+                )))
+            })?;
 
         for region in merge_hits(subject_hits, parameters.max_hit_distance) {
             let total = region.plus + region.minus;
@@ -261,7 +279,11 @@ fn extract_related_copies(
             } else {
                 "plus"
             };
-            copies.push((format!("{subject}_{start}-{end}_{direction}"), extracted));
+            let output_subject = normalized_sequence_id(&subject);
+            copies.push((
+                format!("{output_subject}_{start}-{end}_{direction}"),
+                extracted,
+            ));
         }
     }
     Ok(copies)
@@ -352,6 +374,15 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_blast_database_sequence_ids() {
+        assert_eq!(
+            normalized_sequence_id("emb|CBAADT010000001.1|"),
+            "CBAADT010000001.1"
+        );
+        assert_eq!(normalized_sequence_id("plain_id"), "plain_id");
+    }
+
+    #[test]
     fn sanitizes_query_ids_for_output_paths() {
         assert_eq!(safe_file_name("family/1 (DNA)"), "family_1__DNA_");
     }
@@ -371,7 +402,7 @@ mod tests {
                 let output_index = args.iter().position(|argument| argument == "-out").unwrap();
                 fs::write(
                     &args[output_index + 1],
-                    "family1\tchr1\t100.0\t4\t0\t0\t1\t4\t5\t8\t1e-20\t50.0\n",
+                    "family1\temb|chr1|\t100.0\t4\t0\t0\t1\t4\t5\t8\t1e-20\t50.0\n",
                 )?;
             }
 
@@ -410,6 +441,7 @@ mod tests {
             rmo_threads: 1,
             rma_threads: 1,
             rma_only: false,
+            curation_only: false,
             verbose: false,
         };
         let config = CurationConfig {

@@ -22,6 +22,8 @@ pub struct CliArgs {
     pub rma_threads: u8,
     // run repeat masker only
     pub rma_only: bool,
+    // run consensus curation from existing RepeatModeler output
+    pub curation_only: bool,
     // verbose flag
     pub verbose: bool,
 }
@@ -67,7 +69,7 @@ pub fn parse_args() -> Result<CliArgs> {
             arg!(-d --database <DATABASE_NAME> "Name of the database, when building using `BuildDatabase`.")
                 // not required unless you only want to run RepeatMasker
                 // or I think, when you want run the curation pipeline
-                .required_unless_present("rma_only")
+                .required_unless_present_any(["rma_only", "curation_only"])
                 .value_parser(value_parser!(String)),
         )
         .arg(
@@ -83,7 +85,12 @@ pub fn parse_args() -> Result<CliArgs> {
 
         )
         .arg(
-            arg!(--rma_only "Run RepeatMasker only. Skip RepeatModeler; currently for development.")
+            arg!(--rma_only "Run RepeatMasker only. Skip RepeatModeler and curation.")
+                .conflicts_with("curation_only")
+                .action(ArgAction::SetTrue)
+        )
+        .arg(
+            arg!(--curation_only "Run curation from existing RepeatModeler output.")
                 .action(ArgAction::SetTrue)
         )
         .arg(arg!(--verbose "Print extra debug information").action(ArgAction::SetTrue))
@@ -128,6 +135,8 @@ pub fn parse_args() -> Result<CliArgs> {
 
     let rma_only = matches.get_flag("rma_only");
 
+    let curation_only = matches.get_flag("curation_only");
+
     let verbose = matches.get_flag("verbose");
 
     // collect the arguments
@@ -139,6 +148,7 @@ pub fn parse_args() -> Result<CliArgs> {
         rmo_threads,
         rma_threads,
         rma_only,
+        curation_only,
         verbose,
     })
 }
