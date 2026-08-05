@@ -65,3 +65,25 @@ pub fn clip_interval(start: u64, end: u64, length: usize, flank: usize) -> (usiz
 pub fn reverse_complement(seq: &[u8]) -> Vec<u8> {
     dna::revcomp(seq)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    #[test]
+    fn clips_both_contig_boundaries() {
+        assert_eq!(clip_interval(1, 4, 10, 5), (0, 9));
+        assert_eq!(clip_interval(7, 10, 10, 5), (2, 10));
+    }
+    #[test]
+    fn reverse_complements() {
+        assert_eq!(reverse_complement(b"ACGTN"), b"NACGT".to_vec());
+    }
+    #[test]
+    fn provider_rejects_unknown_contig() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, ">chr1\nACGT").unwrap();
+        let p = FastaSequenceProvider::from_file(f.path()).unwrap();
+        assert!(p.sequence("missing", 0, 1).is_err());
+    }
+}

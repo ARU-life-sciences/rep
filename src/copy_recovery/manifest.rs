@@ -19,6 +19,8 @@ pub struct Manifest {
     pub rep_version: String,
     pub coordinate_convention: String,
     pub configuration: serde_json::Value,
+    #[serde(default)]
+    pub input_fingerprint: String,
     pub warnings: Vec<String>,
     pub status: String,
     pub families: usize,

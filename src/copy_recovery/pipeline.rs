@@ -9,6 +9,7 @@ use super::{
 };
 use crate::{CommandRunner, Error, ErrorKind, Result};
 use bio::io::fasta;
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -40,7 +41,7 @@ pub fn run_copy_recovery_with_runner(
     fs::create_dir_all(&c.output_dir)?;
     if c.resume && !c.force {
         if let Some(existing) = load_manifest(&c.output_dir.join("manifest.json")) {
-            if existing.configuration == serde_json::to_value(c).unwrap_or_default()
+            if existing.input_fingerprint == fingerprint(c).unwrap_or_default()
                 && existing.status == "success"
                 && c.output_dir.join("hits.tsv").is_file()
             {
@@ -201,6 +202,7 @@ pub fn run_copy_recovery_with_runner(
     let m = Manifest {
         schema_version: SCHEMA_VERSION.into(),
         rep_version: env!("CARGO_PKG_VERSION").into(),
+        input_fingerprint: fingerprint(c)?,
         coordinate_convention: "BLAST 1-based inclusive; loci BED 0-based half-open".into(),
         configuration: serde_json::to_value(c)
             .map_err(|e| Error::new(ErrorKind::GenericCli(e.to_string())))?,
@@ -220,6 +222,15 @@ pub fn run_copy_recovery_with_runner(
         families: fams,
         manifest_path: mp,
     })
+}
+fn fingerprint(c: &CopyRecoveryConfig) -> Result<String> {
+    let mut h = Sha256::new();
+    for p in [&c.genome, &c.queries] {
+        let b = fs::read(p)?;
+        h.update(&b);
+    }
+    h.update(serde_json::to_vec(c).map_err(|e| Error::new(ErrorKind::GenericCli(e.to_string())))?);
+    Ok(format!("{:x}", h.finalize()))
 }
 fn stage_map() -> std::collections::BTreeMap<String, super::StageState> {
     let mut m = std::collections::BTreeMap::new();
