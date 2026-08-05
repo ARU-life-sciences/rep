@@ -172,7 +172,7 @@ pub fn rank_loci(loci: &mut [Locus], limit: usize, diversity_filter: bool) {
             .then_with(|| loci[a].subject_id.cmp(&loci[b].subject_id))
             .then_with(|| loci[a].start.cmp(&loci[b].start))
     });
-    let selected: Vec<usize> = Vec::new();
+    let mut selected: Vec<usize> = Vec::new();
     for index in order {
         if selected.len() == limit {
             loci[index].exclusion_reason = Some("selection_limit".into());
@@ -187,6 +187,7 @@ pub fn rank_loci(loci: &mut [Locus], limit: usize, diversity_filter: bool) {
             loci[index].exclusion_reason = Some("redundant_locus".into());
         } else {
             loci[index].selected = true;
+            selected.push(index);
         }
     }
 }

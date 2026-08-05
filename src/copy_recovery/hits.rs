@@ -83,8 +83,8 @@ impl Hit {
             } else {
                 (qstart.abs_diff(qend) + 1) as f64 / qlen as f64
             },
-            evalue: row[11].parse()?,
-            bitscore: row[12].parse()?,
+            evalue: row[if row.len() == 12 { 10 } else { 11 }].parse()?,
+            bitscore: row[if row.len() == 12 { 11 } else { 12 }].parse()?,
         })
     }
 }

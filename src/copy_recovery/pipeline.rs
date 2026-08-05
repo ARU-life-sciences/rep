@@ -1,5 +1,7 @@
 use super::{
+    align::mafft_command,
     config::CopyRecoveryConfig,
+    extract::{clip_interval, reverse_complement, FastaSequenceProvider, SequenceProvider},
     hits::{parse_blast_file, Hit},
     loci::{collapse_overlapping_loci, merge_hits, rank_loci},
     manifest::{FamilyManifest, Manifest, SCHEMA_VERSION},
@@ -42,6 +44,8 @@ pub fn run_copy_recovery_with_runner(
     let mut cmd = blastn_command(executable("blastn"), &db, &c.queries, &blast, c.threads);
     crate::command_runner::run_checked(r, &mut cmd, "blastn")?;
     let hits = parse_blast_file(&blast)?;
+    let provider = FastaSequenceProvider::from_file(&c.genome)?;
+    let mafft_exe = executable("mafft");
     let mut fams = Vec::new();
     let reader = fasta::Reader::from_file(&c.queries)?;
     for rec in reader.records() {
@@ -59,14 +63,93 @@ pub fn run_copy_recovery_with_runner(
         let nsel = loci.iter().filter(|l| l.selected).count();
         write_hits(&dir.join("hits.tsv"), &fh)?;
         write_loci(&dir.join("loci.tsv"), &loci)?;
+        let mut raw = String::new();
+        let mut extended = String::new();
+        let mut copies = String::from("family_id\tlocus_id\tsubject_id\tgenomic_start\tgenomic_end\tstrand\trequested_extended_start\trequested_extended_end\tactual_extended_start\tactual_extended_end\tleft_flank_actual\tright_flank_actual\treverse_complemented\tselected\textraction_status\talignment_status\texclusion_reason\n");
+        let mut usable = 0usize;
+        for locus in loci.iter() {
+            let len = provider.contig_length(&locus.subject_id)?;
+            let (rs, re) = (locus.start, locus.end);
+            let (es, ee) = clip_interval(rs, re, len as usize, c.flank_length);
+            let mut raw_seq = provider.sequence(&locus.subject_id, rs.min(len), re.min(len))?;
+            let mut ext_seq = provider.sequence(&locus.subject_id, es as u64, ee as u64)?;
+            let rc = locus.strand == super::Strand::Minus;
+            if rc {
+                raw_seq = reverse_complement(&raw_seq);
+                ext_seq = reverse_complement(&ext_seq);
+            }
+            let status = if locus.selected {
+                usable += 1;
+                "success"
+            } else {
+                "not_selected"
+            };
+            if locus.selected {
+                raw.push_str(&format!(
+                    ">locus_id={} family_id={}\n{}\n",
+                    locus.locus_id,
+                    locus.family_id,
+                    String::from_utf8_lossy(&raw_seq)
+                ));
+                extended.push_str(&format!(
+                    ">locus_id={} family_id={}\n{}\n",
+                    locus.locus_id,
+                    locus.family_id,
+                    String::from_utf8_lossy(&ext_seq)
+                ));
+            }
+            copies.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                locus.family_id,
+                locus.locus_id,
+                locus.subject_id,
+                rs,
+                re,
+                locus.strand.as_str(),
+                es.saturating_sub(c.flank_length),
+                ee.saturating_add(c.flank_length),
+                es,
+                ee,
+                es.saturating_sub(rs as usize),
+                ee.saturating_sub(re as usize),
+                rc,
+                locus.selected,
+                status,
+                if locus.selected {
+                    "pending"
+                } else {
+                    "not_applicable"
+                },
+                locus.exclusion_reason.as_deref().unwrap_or("")
+            ));
+        }
+        fs::write(dir.join("copies.tsv"), copies)?;
+        fs::write(dir.join("copies.raw.fa"), raw)?;
+        fs::write(dir.join("copies.extended.fa"), &extended)?;
+        if usable == 0 {
+            fs::write(dir.join("copies.aligned.fa"), "")?;
+        } else if usable == 1 {
+            fs::write(dir.join("copies.aligned.fa"), &extended)?;
+        } else {
+            let mut ac = mafft_command(&mafft_exe, &dir.join("copies.extended.fa"), c.threads);
+            let out = crate::command_runner::run_checked(r, &mut ac, "MAFFT")?;
+            fs::write(dir.join("copies.aligned.fa"), out.stdout)?;
+        }
         let fm = FamilyManifest {
             schema_version: SCHEMA_VERSION.into(),
             family_id: id.clone(),
-            status: "success".into(),
+            status: if usable == 0 {
+                "no_usable_copies".into()
+            } else if usable == 1 {
+                "single_copy".into()
+            } else {
+                "success".into()
+            },
             raw_hits: fh.len(),
             merged_loci: loci.len(),
             selected: nsel,
             warnings: Vec::new(),
+            stages: std::collections::BTreeMap::new(),
         };
         fs::write(
             dir.join("manifest.json"),
@@ -90,6 +173,7 @@ pub fn run_copy_recovery_with_runner(
         warnings: Vec::new(),
         status: "success".into(),
         families: fams.len(),
+        stages: std::collections::BTreeMap::new(),
     };
     let mp = c.output_dir.join("manifest.json");
     fs::write(
