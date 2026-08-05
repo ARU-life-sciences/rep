@@ -22,3 +22,5 @@ Required executables are resolved from `PATH`. Custom installations can be selec
 Use `--curation_target <FASTA>` to search the RepeatModeler consensus against a different genome; gzip-compressed targets are decompressed into the curation workspace. Use `--curation_only` to resume curation from an existing RepeatModeler output without rerunning discovery.
 
 The Rust API also exposes `CurationConfig` and `run_curation_with_config` to customize flank length, maximum hit distance, orientation threshold, and hits per query.
+
+codex resume 019fc7db-f0d4-75a0-ba31-5ae6c5133d38

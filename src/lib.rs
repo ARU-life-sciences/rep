@@ -1,6 +1,7 @@
 // Public modules used across the CLI tool
 pub mod cli; // Command-line argument parsing
 pub mod command_runner;
+pub mod copy_recovery;
 pub mod curation;
 pub mod error; // Error types and handling
 pub mod parse_blast; // BLAST outfmt 7 parser
@@ -10,6 +11,10 @@ pub mod repeatmodeler; // RepeatModeler wrapper
 // Re-export key types and functions
 pub use cli::{parse_args, CliArgs};
 pub use command_runner::{CommandRunner, RealCommandRunner};
+pub use copy_recovery::{
+    run_copy_recovery, Aligner, CopyRecoveryConfig, CopyRecoveryResult, FamilyRecoveryResult,
+    SearchBackend,
+};
 pub use curation::{run_curation, run_curation_with_config, CurationConfig};
 pub use error::{Error, ErrorKind, Result};
 pub use repeatmasker::run_repeatmasker;

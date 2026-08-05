@@ -152,3 +152,62 @@ pub fn parse_args() -> Result<CliArgs> {
         verbose,
     })
 }
+
+pub fn parse_recover_copies_args() -> Result<crate::CopyRecoveryConfig> {
+    use clap::{Arg, Command};
+    let m = Command::new("recover-copies")
+        .arg(Arg::new("queries").long("queries").required(true))
+        .arg(Arg::new("genome").long("genome").required(true))
+        .arg(Arg::new("out").long("out").required(true))
+        .arg(
+            Arg::new("flank-length")
+                .long("flank-length")
+                .default_value("2000"),
+        )
+        .arg(
+            Arg::new("hits-per-family")
+                .long("hits-per-family")
+                .default_value("20"),
+        )
+        .arg(
+            Arg::new("max-fragment-gap")
+                .long("max-fragment-gap")
+                .default_value("10000"),
+        )
+        .arg(
+            Arg::new("orientation-threshold")
+                .long("orientation-threshold")
+                .default_value("0.8"),
+        )
+        .arg(Arg::new("threads").long("threads").default_value("1"))
+        .arg(
+            Arg::new("search-backend")
+                .long("search-backend")
+                .default_value("blastn"),
+        )
+        .arg(Arg::new("aligner").long("aligner").default_value("mafft"))
+        .arg(Arg::new("force").long("force").action(ArgAction::SetTrue))
+        .arg(Arg::new("resume").long("resume").action(ArgAction::SetTrue))
+        .get_matches();
+    let get = |n: &str| m.get_one::<String>(n).unwrap();
+    Ok(crate::CopyRecoveryConfig {
+        genome: get("genome").into(),
+        queries: get("queries").into(),
+        output_dir: get("out").into(),
+        flank_length: get("flank-length").parse().unwrap(),
+        hits_per_family: get("hits-per-family").parse().unwrap(),
+        max_fragment_gap: get("max-fragment-gap").parse().unwrap(),
+        orientation_threshold: get("orientation-threshold").parse().unwrap(),
+        threads: get("threads").parse().unwrap(),
+        search_backend: get("search-backend")
+            .parse()
+            .map_err(|e: String| Error::new(ErrorKind::GenericCli(e)))?,
+        aligner: get("aligner")
+            .parse()
+            .map_err(|e: String| Error::new(ErrorKind::GenericCli(e)))?,
+        force: m.get_flag("force"),
+        resume: m.get_flag("resume"),
+        diversity_filter: false,
+        reputils: None,
+    })
+}
