@@ -163,6 +163,28 @@ pub fn collapse_overlapping_loci(mut loci: Vec<Locus>) -> Vec<Locus> {
     result
 }
 
+pub fn mark_ambiguous_strand_loci(loci: &mut [Locus], threshold: f64) {
+    for i in 0..loci.len() {
+        for j in (i + 1)..loci.len() {
+            if loci[i].family_id == loci[j].family_id
+                && loci[i].subject_id == loci[j].subject_id
+                && loci[i].strand != loci[j].strand
+                && loci[i].start < loci[j].end
+                && loci[j].start < loci[i].end
+                && loci[i]
+                    .combined_query_coverage
+                    .min(loci[j].combined_query_coverage)
+                    < threshold
+            {
+                loci[i].selected = false;
+                loci[j].selected = false;
+                loci[i].exclusion_reason = Some("ambiguous_strand".into());
+                loci[j].exclusion_reason = Some("ambiguous_strand".into());
+            }
+        }
+    }
+}
+
 pub fn rank_loci(loci: &mut [Locus], limit: usize, diversity_filter: bool) {
     let mut order = (0..loci.len()).collect::<Vec<_>>();
     order.sort_by(|&a, &b| {

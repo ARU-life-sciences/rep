@@ -3,7 +3,7 @@ use super::{
     config::CopyRecoveryConfig,
     extract::{clip_interval, reverse_complement, FastaSequenceProvider, SequenceProvider},
     hits::{parse_blast_file, Hit},
-    loci::{collapse_overlapping_loci, merge_hits, rank_loci},
+    loci::{collapse_overlapping_loci, mark_ambiguous_strand_loci, merge_hits, rank_loci},
     manifest::{FamilyManifest, Manifest, SCHEMA_VERSION},
     search::{blastn_command, executable, makeblastdb_command},
 };
@@ -12,6 +12,7 @@ use bio::io::fasta;
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 #[derive(Clone, Debug)]
 pub struct FamilyRecoveryResult {
@@ -36,6 +37,38 @@ pub fn run_copy_recovery_with_runner(
 ) -> Result<CopyRecoveryResult> {
     c.validate()
         .map_err(|e| Error::new(ErrorKind::GenericCli(e)))?;
+    fs::create_dir_all(&c.output_dir)?;
+    if c.resume && !c.force {
+        if let Some(existing) = load_manifest(&c.output_dir.join("manifest.json")) {
+            if existing.configuration == serde_json::to_value(c).unwrap_or_default()
+                && existing.status == "success"
+                && c.output_dir.join("hits.tsv").is_file()
+            {
+                let mut families = Vec::new();
+                for entry in fs::read_dir(c.output_dir.join("families"))? {
+                    let path = entry?.path();
+                    if path.is_dir()
+                        && path.join("manifest.json").is_file()
+                        && path.join("copies.aligned.fa").is_file()
+                    {
+                        let id = path.file_name().unwrap().to_string_lossy().to_string();
+                        families.push(FamilyRecoveryResult {
+                            family_id: id,
+                            directory: path,
+                            n_hits: 0,
+                            n_loci: 0,
+                            n_selected: 0,
+                        });
+                    }
+                }
+                return Ok(CopyRecoveryResult {
+                    output_dir: c.output_dir.clone(),
+                    families,
+                    manifest_path: c.output_dir.join("manifest.json"),
+                });
+            }
+        }
+    }
     fs::create_dir_all(c.output_dir.join("families"))?;
     let db = c.output_dir.join("genome");
     let mut cmd = makeblastdb_command(executable("makeblastdb"), &c.genome, &db);
@@ -59,6 +92,7 @@ pub fn run_copy_recovery_with_runner(
         )?;
         let fh: Vec<Hit> = hits.iter().filter(|h| h.query_id == id).cloned().collect();
         let mut loci = collapse_overlapping_loci(merge_hits(&fh, c.max_fragment_gap as u64));
+        mark_ambiguous_strand_loci(&mut loci, c.orientation_threshold);
         rank_loci(&mut loci, c.hits_per_family, c.diversity_filter);
         let nsel = loci.iter().filter(|l| l.selected).count();
         write_hits(&dir.join("hits.tsv"), &fh)?;
@@ -149,7 +183,7 @@ pub fn run_copy_recovery_with_runner(
             merged_loci: loci.len(),
             selected: nsel,
             warnings: Vec::new(),
-            stages: std::collections::BTreeMap::new(),
+            stages: stage_map(),
         };
         fs::write(
             dir.join("manifest.json"),
@@ -173,7 +207,7 @@ pub fn run_copy_recovery_with_runner(
         warnings: Vec::new(),
         status: "success".into(),
         families: fams.len(),
-        stages: std::collections::BTreeMap::new(),
+        stages: stage_map(),
     };
     let mp = c.output_dir.join("manifest.json");
     fs::write(
@@ -186,6 +220,39 @@ pub fn run_copy_recovery_with_runner(
         families: fams,
         manifest_path: mp,
     })
+}
+fn stage_map() -> std::collections::BTreeMap<String, super::StageState> {
+    let mut m = std::collections::BTreeMap::new();
+    for n in [
+        "search", "parse", "merge", "collapse", "select", "extract", "orient", "align",
+    ] {
+        m.insert(
+            n.into(),
+            super::StageState {
+                status: "complete".into(),
+                started_at: None,
+                completed_at: Some(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                        .to_string(),
+                ),
+                input_fingerprint: None,
+                relevant_config: None,
+                commands: Vec::new(),
+                outputs: Vec::new(),
+                warnings: Vec::new(),
+                error: None,
+            },
+        );
+    }
+    m
+}
+fn load_manifest(path: &Path) -> Option<Manifest> {
+    fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
 }
 fn safe(s: &str) -> String {
     let x: String = s
