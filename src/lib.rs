@@ -59,7 +59,7 @@ pub fn pipeline() -> Result<()> {
     if matches.curation_only {
         eprintln!("Running consensus curation only...");
         let runner = RealCommandRunner;
-        run_curation(matches, &runner)?;
+        curation::run_curation_via_copy_recovery(matches, &runner)?;
         return Ok(());
     }
 
