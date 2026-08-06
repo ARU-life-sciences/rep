@@ -33,11 +33,20 @@ impl FastaSequenceProvider {
 }
 impl SequenceProvider for FastaSequenceProvider {
     fn sequence(&self, contig: &str, start: u64, end: u64) -> Result<Vec<u8>> {
-        let seq = self.sequences.get(contig).ok_or_else(|| {
-            Error::new(ErrorKind::GenericCli(format!(
-                "unknown genome contig {contig}"
-            )))
-        })?;
+        let seq = self
+            .sequences
+            .get(contig)
+            .or_else(|| {
+                contig
+                    .split("|")
+                    .nth(1)
+                    .and_then(|id| self.sequences.get(id))
+            })
+            .ok_or_else(|| {
+                Error::new(ErrorKind::GenericCli(format!(
+                    "unknown genome contig {contig}"
+                )))
+            })?;
         if start > end || end > seq.len() as u64 {
             return Err(Error::new(ErrorKind::GenericCli(format!(
                 "invalid interval {contig}:{start}-{end}"
@@ -48,6 +57,12 @@ impl SequenceProvider for FastaSequenceProvider {
     fn contig_length(&self, contig: &str) -> Result<u64> {
         self.sequences
             .get(contig)
+            .or_else(|| {
+                contig
+                    .split("|")
+                    .nth(1)
+                    .and_then(|id| self.sequences.get(id))
+            })
             .map(|s| s.len() as u64)
             .ok_or_else(|| {
                 Error::new(ErrorKind::GenericCli(format!(

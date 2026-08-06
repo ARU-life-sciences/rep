@@ -188,7 +188,7 @@ pub fn parse_recover_copies_args() -> Result<crate::CopyRecoveryConfig> {
         .arg(Arg::new("aligner").long("aligner").default_value("mafft"))
         .arg(Arg::new("force").long("force").action(ArgAction::SetTrue))
         .arg(Arg::new("resume").long("resume").action(ArgAction::SetTrue))
-        .get_matches();
+        .get_matches_from(std::env::args().skip(1));
     let get = |n: &str| m.get_one::<String>(n).unwrap();
     Ok(crate::CopyRecoveryConfig {
         genome: get("genome").into(),
