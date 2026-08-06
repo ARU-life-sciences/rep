@@ -81,7 +81,7 @@ pub fn pipeline() -> Result<()> {
     run_repeatmodeler(matches.clone(), &runner)?;
 
     eprintln!("Running consensus curation...");
-    run_curation(matches.clone(), &runner)?;
+    curation::run_curation_via_copy_recovery(matches.clone(), &runner)?;
 
     // and also run repeatmasker
     eprintln!("Running RepeatMasker...");

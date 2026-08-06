@@ -51,6 +51,49 @@ struct HitRegion {
     minus: usize,
 }
 
+pub fn run_curation_via_copy_recovery(matches: CliArgs, runner: &dyn CommandRunner) -> Result<()> {
+    let configure = matches.configure_path()?;
+    let queries = find_consensus_library(&configure.join(DATA).join("repeatmodeler"))?;
+    let genome = matches
+        .curation_target
+        .clone()
+        .unwrap_or_else(|| matches.fasta_file.clone());
+    let out = configure.join(CURATION).join("recovery");
+    let cfg = crate::CopyRecoveryConfig {
+        genome,
+        queries,
+        output_dir: out.clone(),
+        flank_length: 2000,
+        hits_per_family: 20,
+        max_fragment_gap: 10000,
+        orientation_threshold: 0.8,
+        threads: matches.rmo_threads as usize,
+        search_backend: crate::SearchBackend::Blastn,
+        aligner: crate::Aligner::Mafft,
+        force: false,
+        resume: false,
+        diversity_filter: false,
+        reputils: None,
+    };
+    let result = crate::copy_recovery::run_copy_recovery_with_runner(&cfg, runner)?;
+    let legacy_hits = configure.join(CURATION).join(BLAST_HITS);
+    let legacy_align = configure.join(CURATION).join(ALIGNMENTS);
+    fs::create_dir_all(&legacy_hits)?;
+    fs::create_dir_all(&legacy_align)?;
+    for family in result.families {
+        let name = format!("{}.fa", safe_file_name(&family.family_id));
+        fs::copy(
+            family.directory.join("copies.extended.fa"),
+            legacy_hits.join(&name),
+        )?;
+        fs::copy(
+            family.directory.join("copies.aligned.fa"),
+            legacy_align.join(&name),
+        )?;
+    }
+    Ok(())
+}
+
 pub fn run_curation(matches: CliArgs, runner: &dyn CommandRunner) -> Result<()> {
     run_curation_with_config(matches, runner, CurationConfig::default())
 }
