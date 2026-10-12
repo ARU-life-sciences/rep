@@ -7,6 +7,7 @@
 use serde::Serialize;
 
 use super::{
+    copies::{expected_tsd, superfamilies_with_tsd, CopyEvidence},
     domains::DomainEvidence,
     homology::{ClassSupport, HomologySummary},
     structure::StructuralEvidence,
@@ -401,6 +402,63 @@ pub fn decide(
     }
 }
 
+/// Refine a disposition with evidence from recovered genomic copies:
+/// TSD length versus the class expectation, copy number, and flank conservation.
+pub fn apply_copy_evidence(mut d: Disposition, c: &CopyEvidence) -> Disposition {
+    d.evidence.push(format!(
+        "copies:loci={},full_length={},identity={:.1}",
+        c.loci, c.full_length, c.mean_identity
+    ));
+    let conserved_flanks = c.flank_similarity.is_some_and(|f| f >= 0.6);
+    if conserved_flanks {
+        d.warnings.push(format!(
+            "conserved_flanks:{:.2}(truncated_consensus_or_segmental_duplication)",
+            c.flank_similarity.unwrap_or_default()
+        ));
+    }
+    if c.loci < 3 {
+        d.warnings.push(format!("low_copy_number:{}", c.loci));
+    }
+    if let Some(tsd) = &c.tsd {
+        d.evidence.push(format!(
+            "tsd:{}bp({}),support={:.2},null={:.2},n={}",
+            tsd.length, tsd.motif, tsd.support, tsd.null_support, tsd.copies_evaluated
+        ));
+    }
+    match d.kind {
+        DispositionKind::KnownTe | DispositionKind::Chimeric => {
+            if let (Some(tsd), Some(expected)) = (&c.tsd, expected_tsd(&d.label)) {
+                if expected.contains(&tsd.length) {
+                    d.evidence.push(format!("tsd_consistent_with:{}", d.label));
+                } else if tsd.support >= 0.6 && tsd.copies_evaluated >= 5 {
+                    d.warnings
+                        .push(format!("tsd_inconsistent_with:{}", d.label));
+                    d.confidence = d.confidence.lower();
+                }
+            }
+        }
+        DispositionKind::NovelCandidate => {
+            if let Some(tsd) = &c.tsd {
+                let hints = superfamilies_with_tsd(top_level(&d.label), tsd.length);
+                if !hints.is_empty() {
+                    d.evidence.push(format!("tsd_suggests:{}", hints.join(",")));
+                }
+            }
+            if c.loci < 3 || conserved_flanks {
+                d.confidence = d.confidence.lower();
+            }
+        }
+        DispositionKind::Unresolved if c.loci >= 10 && c.full_length >= 3 && !conserved_flanks => {
+            // a dispersed, multi-copy repeat that nothing else explains
+            d.kind = DispositionKind::NovelCandidate;
+            d.confidence = Confidence::Low;
+            d.evidence.push("dispersed_multicopy_repeat".into());
+        }
+        _ => {}
+    }
+    d
+}
+
 fn structural_notes(s: &StructuralEvidence, t: &DecisionThresholds) -> Vec<String> {
     let mut notes = Vec::new();
     if let Some(r) = &s.ltr {
@@ -768,5 +826,103 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w == "domain_class_conflict:DNA/hAT"));
+    }
+
+    fn copies(loci: usize, full: usize, tsd: Option<(usize, f64)>, flanks: f64) -> CopyEvidence {
+        CopyEvidence {
+            loci,
+            full_length: full,
+            mean_identity: 90.0,
+            tsd: tsd.map(|(length, support)| super::super::copies::Tsd {
+                length,
+                support,
+                null_support: 0.1,
+                motif: "TA".into(),
+                copies_evaluated: 10,
+            }),
+            flank_similarity: Some(flanks),
+        }
+    }
+
+    fn disposition(kind: DispositionKind, label: &str, confidence: Confidence) -> Disposition {
+        Disposition {
+            kind,
+            label: label.into(),
+            confidence,
+            evidence: vec![],
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn tsd_confirms_or_contradicts_known_classes() {
+        let d = apply_copy_evidence(
+            disposition(
+                DispositionKind::KnownTe,
+                "DNA/TcMar-Mariner",
+                Confidence::High,
+            ),
+            &copies(20, 8, Some((2, 0.8)), 0.3),
+        );
+        assert!(d
+            .evidence
+            .iter()
+            .any(|e| e == "tsd_consistent_with:DNA/TcMar-Mariner"));
+        assert_eq!(d.confidence, Confidence::High);
+        let d = apply_copy_evidence(
+            disposition(DispositionKind::KnownTe, "DNA/hAT", Confidence::High),
+            &copies(20, 8, Some((2, 0.8)), 0.3),
+        );
+        assert_eq!(d.confidence, Confidence::Medium);
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w == "tsd_inconsistent_with:DNA/hAT"));
+    }
+
+    #[test]
+    fn tsd_hints_superfamilies_for_novel_candidates() {
+        let d = apply_copy_evidence(
+            disposition(
+                DispositionKind::NovelCandidate,
+                "DNA/Unknown",
+                Confidence::Medium,
+            ),
+            &copies(30, 10, Some((8, 0.7)), 0.3),
+        );
+        assert!(d
+            .evidence
+            .iter()
+            .any(|e| e == "tsd_suggests:DNA/hAT,DNA/MULE,DNA/P,DNA/Merlin"));
+        assert_eq!(d.confidence, Confidence::Medium);
+        let d = apply_copy_evidence(
+            disposition(
+                DispositionKind::NovelCandidate,
+                "DNA/Unknown",
+                Confidence::Medium,
+            ),
+            &copies(2, 1, None, 0.9),
+        );
+        assert_eq!(d.confidence, Confidence::Low);
+        assert!(d.warnings.iter().any(|w| w.starts_with("conserved_flanks")));
+        assert!(d.warnings.iter().any(|w| w == "low_copy_number:2"));
+    }
+
+    #[test]
+    fn dispersed_multicopy_unresolved_families_become_candidates() {
+        let d = apply_copy_evidence(
+            disposition(DispositionKind::Unresolved, "Unknown", Confidence::Low),
+            &copies(40, 6, None, 0.3),
+        );
+        assert_eq!(d.kind, DispositionKind::NovelCandidate);
+        let d = apply_copy_evidence(
+            disposition(DispositionKind::Unresolved, "Unknown", Confidence::Low),
+            &copies(40, 6, None, 0.8),
+        );
+        assert_eq!(
+            d.kind,
+            DispositionKind::Unresolved,
+            "segmental-duplication-like flanks"
+        );
     }
 }

@@ -399,6 +399,12 @@ fn classify_command() -> clap::Command {
                 .value_parser(["blastx", "diamond"]),
         )
         .arg(
+            Arg::new("copies")
+                .long("copies")
+                .help("`rep recover-copies` output directory: adds copy number, TSD and flank evidence")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
             Arg::new("pfam")
                 .long("pfam")
                 .help("Full Pfam-A.hmm; TE domain models are extracted for ORF domain architecture")
@@ -441,6 +447,7 @@ where
     };
     config.all_families = m.get_flag("all");
     config.pfam = m.get_one::<PathBuf>("pfam").cloned();
+    config.copies_dir = m.get_one::<PathBuf>("copies").cloned();
     config.threads = *m.get_one::<usize>("threads").expect("defaulted");
     config.evalue = *m.get_one::<f64>("evalue").expect("defaulted");
     config.backend = m

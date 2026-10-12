@@ -9,7 +9,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    decide::{decide, DecisionThresholds, Disposition, DispositionKind},
+    copies::{read_copy_evidence, CopyEvidence, CopyParams},
+    decide::{apply_copy_evidence, decide, DecisionThresholds, Disposition, DispositionKind},
     domains::{
         extract_te_models, hmmpress_command, hmmscan_command, interpret, parse_domtblout,
         DomainEvidence, DomainHit, TE_DOMAINS,
@@ -39,6 +40,9 @@ pub struct ClassifyConfig {
     pub index_dir: Option<PathBuf>,
     /// Full Pfam-A.hmm; TE domain models are extracted from it for ORF scans.
     pub pfam: Option<PathBuf>,
+    /// `rep recover-copies` output directory for copy-based evidence.
+    pub copies_dir: Option<PathBuf>,
+    pub copy_params: CopyParams,
     pub output_dir: PathBuf,
     /// Classify every family, not only `Unknown`s (useful for validation).
     pub all_families: bool,
@@ -57,6 +61,8 @@ impl ClassifyConfig {
             nucleotides: None,
             index_dir: None,
             pfam: None,
+            copies_dir: None,
+            copy_params: CopyParams::default(),
             output_dir,
             all_families: false,
             threads: 1,
@@ -112,6 +118,7 @@ pub struct FamilyClassification {
     pub homology: HomologySummary,
     pub nucleotide_homology: HomologySummary,
     pub domains: DomainEvidence,
+    pub copies: Option<CopyEvidence>,
     pub structure: StructuralEvidence,
 }
 
@@ -223,13 +230,24 @@ pub fn run_classify_with_runner(
                 .get(family.id.as_str())
                 .map_or(&[][..], Vec::as_slice),
         );
-        let disposition = decide(
+        let mut disposition = decide(
             &homology,
             &nucleotide_homology,
             &domains,
             &structure,
             &c.thresholds,
         );
+        let copies = match &c.copies_dir {
+            Some(dir) => read_copy_evidence(
+                &dir.join("families")
+                    .join(crate::copy_recovery::family_dir_name(&family.id)),
+                &c.copy_params,
+            )?,
+            None => None,
+        };
+        if let Some(evidence) = &copies {
+            disposition = apply_copy_evidence(disposition, evidence);
+        }
         let label_agreement = family
             .label
             .as_deref()
@@ -250,6 +268,7 @@ pub fn run_classify_with_runner(
             homology,
             nucleotide_homology,
             domains,
+            copies,
             structure,
         });
     }
@@ -468,6 +487,7 @@ fn write_outputs(
          best_class\tbest_subject\tbest_bitscore\tclass_coverage\tchimeric_classes\t\
          nucl_best_class\tnucl_best_subject\tnucl_bitscore\tnucl_coverage\tnucl_identity\t\
          domain_architecture\tdomain_class\tdomain_novelty\t\
+         copy_loci\tcopy_full_length\tcopy_identity\ttsd_length\ttsd_motif\ttsd_support\tflank_similarity\t\
          ltr_length\tltr_identity\ttir_length\ttir_identity\ttail\ttandem_period\t\
          tandem_identity\tlongest_orf_aa\tn_orfs\tgc\tevidence\twarnings\n",
     );
@@ -478,7 +498,7 @@ fn write_outputs(
         let opt = |v: Option<String>| v.unwrap_or_default();
         writeln!(
             tsv,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
             f.family_id,
             f.original_label.as_deref().unwrap_or(""),
             s.length,
@@ -499,6 +519,13 @@ fn write_outputs(
             f.domains.architecture,
             f.domains.inferred.as_deref().unwrap_or(""),
             f.domains.novel.as_deref().unwrap_or(""),
+            opt(f.copies.as_ref().map(|c| c.loci.to_string())),
+            opt(f.copies.as_ref().map(|c| c.full_length.to_string())),
+            opt(f.copies.as_ref().map(|c| format!("{:.1}", c.mean_identity))),
+            opt(f.copies.as_ref().and_then(|c| c.tsd.as_ref()).map(|t| t.length.to_string())),
+            opt(f.copies.as_ref().and_then(|c| c.tsd.as_ref()).map(|t| t.motif.clone())),
+            opt(f.copies.as_ref().and_then(|c| c.tsd.as_ref()).map(|t| format!("{:.2}", t.support))),
+            opt(f.copies.as_ref().and_then(|c| c.flank_similarity).map(|v| format!("{v:.2}"))),
             opt(s.ltr.as_ref().map(|r| r.length.to_string())),
             opt(s.ltr.as_ref().map(|r| format!("{:.3}", r.identity))),
             opt(s.tir.as_ref().map(|r| r.length.to_string())),

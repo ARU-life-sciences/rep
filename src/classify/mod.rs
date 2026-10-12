@@ -6,6 +6,7 @@
 //! homology, which makes it a candidate novel element. Families that nothing
 //! explains are reported as `unresolved` together with the missing evidence.
 
+mod copies;
 mod decide;
 mod domains;
 mod homology;
@@ -14,7 +15,11 @@ mod pipeline;
 mod structure;
 mod taxonomy;
 
-pub use decide::{decide, is_non_te, Confidence, DecisionThresholds, Disposition, DispositionKind};
+pub use copies::{expected_tsd, read_copy_evidence, CopyEvidence, CopyParams, Tsd};
+pub use decide::{
+    apply_copy_evidence, decide, is_non_te, Confidence, DecisionThresholds, Disposition,
+    DispositionKind,
+};
 pub use domains::{
     extract_te_models, hmmscan_command, interpret, parse_domtblout, role_of, DomainEvidence,
     DomainHit, Role, TE_DOMAINS,

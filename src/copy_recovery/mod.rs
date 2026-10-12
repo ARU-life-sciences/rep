@@ -18,6 +18,7 @@ pub use extract::{clip_interval, reverse_complement, FastaSequenceProvider, Sequ
 pub use hits::{parse_blast_file, Hit, Strand};
 pub use loci::{collapse_overlapping_loci, merge_hits, rank_loci, Locus};
 pub use manifest::{FamilyManifest, Manifest, StageState, SCHEMA_VERSION};
+pub(crate) use pipeline::safe as family_dir_name;
 pub use pipeline::{
     run_copy_recovery, run_copy_recovery_with_runner, CopyRecoveryResult, FamilyRecoveryResult,
 };

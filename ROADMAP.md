@@ -87,14 +87,19 @@ be right first.
 - [ ] Curation workflow for the local layer: promote candidates to accepted, rename
       `*/Unknown` families to a new class name, and export a submission to Dfam.
 
-### M2 – Copy-informed evidence
+### M2 – Copy-informed evidence (core done)
 
-- Run copy recovery on Unknowns and read `copies.tsv` and the aligned copies.
-- Copy number and mean divergence from the consensus (age).
-- TSD detection from the flanks of selected copies (length mode and motif): 2 bp for Tc1/mariner (TA),
-  4 to 6 bp for LTR/Gypsy and Copia, 8 bp for hAT, 9 to 11 bp for MULE, none for Helitrons, and variable for LINEs.
-- Boundary sharpness, meaning where the copy alignment loses coverage, which separates TEs from segmental duplications.
-- Feed `reputils curate` outputs (refined consensus, architecture hints) back in where they exist.
+- [x] `rep classify --copies <recover-copies dir>` (automatic in the full pipeline) reads per-family loci and copies.
+- [x] Copy number, full-length copies (≥80% consensus coverage) and mean identity to the consensus (age).
+- [x] TSD detection at full-length copy boundaries with ±3 bp slack. The modal exact length is checked
+      against a null at positions shifted 40 bp into the flanks, and the length, motif and support are reported.
+- [x] Flank conservation between copies flags truncated consensi and segmental duplications.
+- [x] Decisions: a TSD consistent or inconsistent with the expected superfamily range confirms or downgrades
+      known classes, suggests superfamilies for novel candidates, and dispersed multicopy repeats
+      with nothing else are promoted to low-confidence novel candidates.
+- [ ] Validate on real genomes: *Cloeon dipterum* (94% Unknown) from `repeatmodeler_ensembl`, plus Amanita and the moss.
+- [ ] Boundary sharpness from the coverage profile of consensus positions across copies.
+- [ ] Feed `reputils curate` outputs (refined consensus, architecture hints) back in.
 
 ### M3 – Protein-domain architecture (core done)
 

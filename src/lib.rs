@@ -153,6 +153,8 @@ fn run_classification(matches: &CliArgs, db: &Path, runner: &dyn CommandRunner) 
     );
     config.threads = usize::from(matches.rmo_threads);
     config.pfam = matches.pfam.clone();
+    // copy recovery has already run in the full pipeline
+    config.copies_dir = Some(configure.join("curation").join("recovery"));
     let result = classify::run_classify_with_runner(&config, runner)?;
     eprintln!(
         "Classified {} families: {:?}",

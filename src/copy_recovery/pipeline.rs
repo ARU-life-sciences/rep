@@ -279,7 +279,8 @@ fn load_manifest(path: &Path) -> Option<Manifest> {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
-fn safe(s: &str) -> String {
+/// Directory name used for a family under `families/`.
+pub(crate) fn safe(s: &str) -> String {
     let x: String = s
         .chars()
         .map(|c| {
