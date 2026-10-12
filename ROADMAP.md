@@ -148,9 +148,23 @@ GIRI's CENSOR screens arbitrary sequences against Repbase and reports classified
 - Run the structural detectors on unmatched long regions to flag possible novel elements.
 - Whole-genome masking stays with RepeatMasker in the full pipeline, using the same library.
 
-### M7 – Validation
+### M7 – Validation and calibration (in progress)
 
-- Hold out families RepeatModeler *did* classify, strip their labels, and measure how well
-  dispositions recover them (precision and recall per class).
-- Use the 122 custom labelled proteins as positive controls for the taxonomy and homology path.
-- Synthetic genomes with planted elements of known structure, including an end-to-end fixture with real BLAST.
+Test data: `/lustre/scratch122/tol/teams/blaxter/users/mb39/repeatmodeler_ensembl` holds 559 RepeatModeler
+libraries (1.70 M families, **65.5% Unknown** after RepeatClassifier); 473 have Darwin genomes for copy evidence.
+
+Findings from the first batch (v1, 48 libraries, 2026-10-12):
+- Most RepeatClassifier Unknowns have no homology to Repbase, Dfam or RepeatPeps at all, so
+  homology alone cannot resolve them. Copy evidence (M2), structure and domains decide the rest.
+- dc-megablast at E ≤ 1e-10 missed most diverged family relationships that RepeatClassifier
+  finds. `blastn -task blastn` at E ≤ 1e-5 recovers most of them, but weak hits (median ~90 bits,
+  ~26% coverage) agree with RepeatClassifier's class only ~59% of the time, so they are low-confidence calls.
+- Structural detectors against composition-preserving shuffles: TIR 7.5% vs 0.6%, poly-A 2.8% vs 0.3%.
+- Real-data defects handled: repeated library IDs (7 libraries) and Repbase Helitrons filed under "DNA transposon".
+
+Next:
+- [ ] v2 batch (all 559, sensitive search) → calibrate confidence bands from agreement per evidence bin
+      (`target/dev/calibrate.py` prototype; move into `rep` as a calibration table).
+- [ ] Hold-out benchmark: strip labels from RepeatClassifier-classified families and score recovery per class.
+- [ ] Consider `nhmmer` against Dfam curated HMMs for the most diverged relationships.
+- [ ] Synthetic genomes with planted elements of known structure (end-to-end fixture with real BLAST).
