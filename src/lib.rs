@@ -35,12 +35,14 @@ const INTERMEDIATE: &str = "intermediate";
 const RESULTS: &str = "results";
 const PIPELINE_SCRIPTS: &str = "pipeline_scripts";
 const DATA: &str = "data";
+const CLASSIFY: &str = "classify";
 const REPEATMASKER_ENV: &str = "REP_REPEATMASKER";
 const REPEATMODELER_ENV: &str = "REP_REPEATMODELER";
 const BUILD_DATABASE_ENV: &str = "REP_BUILD_DATABASE";
 const MAKEBLASTDB_ENV: &str = "REP_MAKEBLASTDB";
 const BLASTN_ENV: &str = "REP_BLASTN";
 const MAFFT_ENV: &str = "REP_MAFFT";
+const BLASTX_ENV: &str = "REP_BLASTX";
 
 // Utility to create a named subdirectory within a base path
 fn make_subdir(base: &Path, name: &str) -> Result<()> {
@@ -85,6 +87,11 @@ pub fn pipeline() -> Result<()> {
     eprintln!("Running consensus curation...");
     curation::run_curation_via_copy_recovery(matches.clone(), &runner)?;
 
+    if let Some(db) = &matches.refdb {
+        eprintln!("Classifying repeat families...");
+        run_classification(&matches, db, &runner)?;
+    }
+
     // and also run repeatmasker
     eprintln!("Running RepeatMasker...");
     run_repeatmasker(matches.clone(), &runner)?;
@@ -121,12 +128,35 @@ fn check_executables(matches: &CliArgs) -> Result<()> {
         required.push((MAKEBLASTDB_ENV, "makeblastdb"));
         required.push((BLASTN_ENV, "blastn"));
         required.push((MAFFT_ENV, "mafft"));
+        if matches.refdb.is_some() {
+            required.push((BLASTX_ENV, "blastx"));
+        }
     }
 
     for (env_var, executable) in required {
         let path = find_executable(env_var, executable)?;
         eprintln!("{} found at {}", executable, path.display());
     }
+    Ok(())
+}
+
+/// Classify the RepeatModeler library against a reference database; the
+/// relabelled library is then used by RepeatMasker.
+fn run_classification(matches: &CliArgs, db: &Path, runner: &dyn CommandRunner) -> Result<()> {
+    let configure = matches.configure_path()?;
+    let library =
+        repeatmasker::find_consensus_library(&configure.join(DATA).join("repeatmodeler"))?;
+    let mut config = classify::ClassifyConfig::from_refdb(
+        library,
+        &refdb::RefDb::new(db),
+        configure.join(CLASSIFY),
+    );
+    config.threads = usize::from(matches.rmo_threads);
+    let result = classify::run_classify_with_runner(&config, runner)?;
+    eprintln!(
+        "Classified {} families: {:?}",
+        result.summary.classified_families, result.summary.by_disposition
+    );
     Ok(())
 }
 
@@ -295,6 +325,8 @@ mod tests {
             rma_only: false,
             curation_only: false,
             verbose: false,
+            ltr_struct: false,
+            refdb: None,
         };
 
         set_up_filesystem(args).unwrap();

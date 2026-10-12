@@ -26,6 +26,10 @@ pub struct CliArgs {
     pub curation_only: bool,
     // verbose flag
     pub verbose: bool,
+    // run RepeatModeler's LTR structural discovery (-LTRStruct)
+    pub ltr_struct: bool,
+    // reference database used to classify families before masking
+    pub refdb: Option<PathBuf>,
 }
 
 impl CliArgs {
@@ -93,6 +97,14 @@ pub fn parse_args() -> Result<CliArgs> {
             arg!(--curation_only "Run curation from existing RepeatModeler output.")
                 .action(ArgAction::SetTrue)
         )
+        .arg(
+            arg!(--ltr_struct "Run RepeatModeler with -LTRStruct (LTR structural discovery).")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            arg!(--refdb <REFDB> "Built `rep refdb` database: classify families and mask with the reclassified library.")
+                .value_parser(value_parser!(PathBuf)),
+        )
         .arg(arg!(--verbose "Print extra debug information").action(ArgAction::SetTrue))
         .get_matches();
 
@@ -139,6 +151,18 @@ pub fn parse_args() -> Result<CliArgs> {
 
     let verbose = matches.get_flag("verbose");
 
+    let ltr_struct = matches.get_flag("ltr_struct");
+
+    let refdb = matches.get_one::<PathBuf>("refdb").cloned();
+    if let Some(db) = &refdb {
+        if !db.join("build").join("te_nucl.fa").is_file() {
+            return Err(Error::new(ErrorKind::GenericCli(format!(
+                "{} is not a built reference database (run `rep refdb build`)",
+                db.display()
+            ))));
+        }
+    }
+
     // collect the arguments
     Ok(CliArgs {
         fasta_file: fasta,
@@ -150,6 +174,8 @@ pub fn parse_args() -> Result<CliArgs> {
         rma_only,
         curation_only,
         verbose,
+        ltr_struct,
+        refdb,
     })
 }
 

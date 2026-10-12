@@ -488,6 +488,8 @@ mod tests {
             rma_only: false,
             curation_only: false,
             verbose: false,
+            ltr_struct: false,
+            refdb: None,
         };
         let config = CurationConfig {
             flank: 2,

@@ -17,7 +17,23 @@ pub fn run_repeatmasker(matches: CliArgs, runner: &dyn CommandRunner) -> Result<
     let mut repeatmodeler_path = matches.configure_path()?.to_path_buf();
     repeatmodeler_path.push(DATA);
     repeatmodeler_path.push("repeatmodeler");
-    let full_consensi_path = find_consensus_library(&repeatmodeler_path)?;
+    // mask with the reclassified library when the classification stage ran
+    let full_consensi_path = match &matches.refdb {
+        Some(_) => {
+            let path = matches
+                .configure_path()?
+                .join(crate::CLASSIFY)
+                .join("library.reclassified.fa");
+            if !path.is_file() {
+                return Err(Error::new(ErrorKind::GenericCli(format!(
+                    "{} not found; run the classification stage before masking",
+                    path.display()
+                ))));
+            }
+            path
+        }
+        None => find_consensus_library(&repeatmodeler_path)?,
+    };
 
     eprintln!("Data path: {:?}", data_path);
 
@@ -144,6 +160,8 @@ mod tests {
             rma_only: false,
             curation_only: false,
             verbose: false,
+            ltr_struct: false,
+            refdb: None,
         };
 
         set_up_filesystem(args.clone()).unwrap();
@@ -161,5 +179,35 @@ mod tests {
         // use the mock runner
         let runner = MockRunner;
         assert!(run_repeatmasker(args, &runner).is_ok());
+    }
+
+    #[test]
+    fn masks_with_reclassified_library_when_refdb_is_set() {
+        let tmp = tempdir().unwrap();
+        let fasta = tmp.path().join("genome.fa");
+        write(&fasta, ">x\nACGT").unwrap();
+        let args = CliArgs {
+            fasta_file: fasta,
+            curation_target: None,
+            configure: Some(tmp.path().to_path_buf()),
+            database: None,
+            rmo_threads: 1,
+            rma_threads: 1,
+            rma_only: true,
+            curation_only: false,
+            verbose: false,
+            ltr_struct: false,
+            refdb: Some(tmp.path().join("db")),
+        };
+        set_up_filesystem(args.clone()).unwrap();
+        let err = run_repeatmasker(args.clone(), &MockRunner).unwrap_err();
+        assert!(err.to_string().contains("run the classification stage"));
+        std::fs::create_dir_all(tmp.path().join("classify")).unwrap();
+        write(
+            tmp.path().join("classify/library.reclassified.fa"),
+            ">a#LTR/Gypsy\nACGT",
+        )
+        .unwrap();
+        assert!(run_repeatmasker(args, &MockRunner).is_ok());
     }
 }

@@ -36,9 +36,7 @@ pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result
         .current_dir(data_path.clone())
         .arg("-name")
         .arg(&database)
-        .arg("-dir")
-        .arg(".")
-        .arg(matches.fasta_file);
+        .arg(&matches.fasta_file);
 
     run_checked(runner, &mut build_database, "BuildDatabase")?;
 
@@ -51,6 +49,9 @@ pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result
         .arg(&database)
         .arg("-threads")
         .arg(matches.rmo_threads.to_string());
+    if matches.ltr_struct {
+        run_repeat_modeler.arg("-LTRStruct");
+    }
 
     run_checked(runner, &mut run_repeat_modeler, "RepeatModeler")?;
 
@@ -102,6 +103,8 @@ mod tests {
             rma_only: false,
             curation_only: false,
             verbose: false,
+            ltr_struct: false,
+            refdb: None,
         };
 
         let runner = MockRunner;
@@ -109,5 +112,52 @@ mod tests {
         set_up_filesystem(args.clone()).unwrap();
         let out = run_repeatmodeler(args, &runner);
         assert!(out.is_ok());
+    }
+
+    struct Recorder(std::cell::RefCell<Vec<Vec<String>>>);
+
+    impl CommandRunner for Recorder {
+        fn run(&self, cmd: &mut Command) -> Result<Output> {
+            self.0.borrow_mut().push(
+                std::iter::once(cmd.get_program())
+                    .chain(cmd.get_args())
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect(),
+            );
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn passes_ltr_struct_and_indexes_only_the_genome() {
+        let tmp = tempdir().unwrap();
+        let fasta = tmp.path().join("genome.fa");
+        std::fs::write(&fasta, ">x\nACGT").unwrap();
+        let args = CliArgs {
+            fasta_file: fasta.clone(),
+            curation_target: None,
+            configure: Some(tmp.path().to_path_buf()),
+            database: Some("db".to_string()),
+            rmo_threads: 4,
+            rma_threads: 1,
+            rma_only: false,
+            curation_only: false,
+            verbose: false,
+            ltr_struct: true,
+            refdb: None,
+        };
+        set_up_filesystem(args.clone()).unwrap();
+        let runner = Recorder(Default::default());
+        run_repeatmodeler(args, &runner).unwrap();
+        let calls = runner.0.into_inner();
+        assert_eq!(&calls[0][1..], ["-name", "db", fasta.to_str().unwrap()]);
+        assert_eq!(
+            &calls[1][1..],
+            ["-database", "db", "-threads", "4", "-LTRStruct"]
+        );
     }
 }
