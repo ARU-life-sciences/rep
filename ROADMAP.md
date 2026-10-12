@@ -11,12 +11,12 @@ A disposition is one of:
 
 | Disposition | Meaning |
 | --- | --- |
-| `known_te` | Protein (and later nucleotide) homology to a classified TE; relabelled `Class/Superfamily` |
+| `known_te` | Protein, nucleotide or domain-architecture evidence for a known class; relabelled `Class/Superfamily` |
 | `chimeric` | Homology to two or more incompatible TE classes in different regions |
 | `simple_repeat` / `satellite` | Tandem periodicity explains the family (period recorded) |
 | `low_complexity` | Compositionally biased, non-periodic |
 | `novel_candidate` | TE hallmarks (terminal repeats, coding capacity, poly-A, TSDs, copy number) without known homology |
-| `host_or_artefact` | Multi-copy host gene, segmental duplication, organellar or RNA-gene derived (milestone 4) |
+| `host_or_artefact` | Matches an RNA gene or other non-TE reference, or keeps such a label from RepeatClassifier |
 | `unresolved` | No evidence either way; the missing evidence is recorded |
 
 ## Responsibility boundary
@@ -63,7 +63,7 @@ be right first.
 - [x] `recover-copies` CLI uses typed parsing, validates inputs, and exposes `--blast-task`, `--evalue` and `--diversity-filter`.
 - [ ] Handoff work packages 1 and 3 to 7 remain (per-stage resume, partial failures, reputils adapter, docs).
 
-### M1 – Unknown triage core: `rep classify` (started)
+### M1 – Unknown triage core: `rep classify` (done)
 
 - [x] Parse RepeatModeler library headers (`id#Class/Family`) and select Unknowns, or all families with `--all`.
 - [x] Ordered RepBase-name → `Class/Superfamily` taxonomy with unresolved accounting.
@@ -97,7 +97,9 @@ be right first.
 - [x] Decisions: a TSD consistent or inconsistent with the expected superfamily range confirms or downgrades
       known classes, suggests superfamilies for novel candidates, and dispersed multicopy repeats
       with nothing else are promoted to low-confidence novel candidates.
-- [ ] Validate on real genomes: *Cloeon dipterum* (94% Unknown) from `repeatmodeler_ensembl`, plus Amanita and the moss.
+- [x] First real genome end to end (*Metschnikowia zobellii*): fixes for tRNAs, fragment matches and conserved flanks.
+- [ ] Validate on *Cloeon dipterum* (94% Unknown), *Amanita rubescens* and the moss (jobs running).
+- [ ] Copy recovery speed: about 23 s per family, dominated by MAFFT; align families in parallel.
 - [ ] Boundary sharpness from the coverage profile of consensus positions across copies.
 - [ ] Feed `reputils curate` outputs (refined consensus, architecture hints) back in.
 
@@ -129,11 +131,11 @@ be right first.
   duplications, and multi-copy host genes.
 - Per-candidate HTML or TSV evidence report.
 
-### M5 – Feedback into masking
+### M5 – Feedback into masking (partly done)
 
-- Relabelled library into RepeatMasker for a second round, reporting the fraction of
-  Unknown base pairs resolved.
-- Route the full pipeline through `classify` between copy recovery and RepeatMasker.
+- [x] The full pipeline runs `classify` between copy recovery and RepeatMasker (`--refdb`, `--pfam`),
+      and RepeatMasker masks with the relabelled library. `--ltr_struct` passes `-LTRStruct` to RepeatModeler.
+- [ ] Report the fraction of Unknown base pairs resolved (compare RepeatMasker tables before and after).
 
 ### M6 – `rep annotate`: one-stop TE identification for any sequence (CENSOR replacement)
 
