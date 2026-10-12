@@ -100,8 +100,8 @@ impl Default for DecisionThresholds {
             min_tandem_copies: 3.0,
             coding_orf_aa: 300,
             sine_max_length: 700,
-            nucl_min_bitscore: 100.0,
-            nucl_min_coverage: 0.3,
+            nucl_min_bitscore: 50.0,
+            nucl_min_coverage: 0.1,
             nucl_strong_coverage: 0.6,
         }
     }
@@ -229,6 +229,11 @@ pub fn decide(
                 warnings.push(format!("nucleotide_class_conflict:{}", n.class));
                 confidence = confidence.lower();
             }
+        }
+        if source == "nucleotide" && (best.best_bitscore < 100.0 || best.query_coverage < 0.3) {
+            // weak nucleotide evidence: accepted, but only as a low-confidence call
+            warnings.push("weak_nucleotide_homology".into());
+            confidence = Confidence::Low;
         }
         if source == "nucleotide" && structure.length < 500 && best.best_subject_coverage < 0.1 {
             // a short family matching a small piece of a long reference
@@ -716,7 +721,7 @@ mod tests {
         // weak coverage is ignored
         let d = decide(
             &HomologySummary::default(),
-            &support("rRNA", 900.0, 0.1),
+            &support("rRNA", 900.0, 0.05),
             &DomainEvidence::default(),
             &s,
             &DecisionThresholds::default(),
@@ -1025,5 +1030,22 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.starts_with("short_match_within_long_reference")));
+    }
+
+    #[test]
+    fn weak_nucleotide_homology_is_a_low_confidence_call() {
+        let s = analyse(&random(1500, 16), &StructureParams::default());
+        let d = decide(
+            &HomologySummary::default(),
+            &support("LINE/RTE", 80.0, 0.2),
+            &DomainEvidence::default(),
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(
+            (d.kind, d.label.as_str(), d.confidence),
+            (DispositionKind::KnownTe, "LINE/RTE", Confidence::Low)
+        );
+        assert!(d.warnings.contains(&"weak_nucleotide_homology".to_string()));
     }
 }

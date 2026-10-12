@@ -51,17 +51,20 @@ pub fn makeblastdb_nucleotide_command(exe: impl AsRef<Path>, fasta: &Path, out: 
     c
 }
 
-/// Consensus-versus-library nucleotide search. `dc-megablast` tolerates the
-/// divergence between related families while staying fast on large libraries.
+/// Consensus-versus-library nucleotide search. The `blastn` task (word size
+/// 11) finds far more of the diverged relationships between TE families than
+/// `dc-megablast`, at little cost for library-sized queries.
 pub fn blastn_library_command(
     exe: impl AsRef<Path>,
     db: &Path,
     query: &Path,
     out: &Path,
     threads: usize,
+    task: &str,
+    evalue: f64,
 ) -> Command {
     let mut c = Command::new(exe.as_ref());
-    c.args(["-task", "dc-megablast", "-db"])
+    c.args(["-task", task, "-db"])
         .arg(db)
         .arg("-query")
         .arg(query)
@@ -69,7 +72,7 @@ pub fn blastn_library_command(
             "-outfmt",
             &format!("6 {OUTFMT_FIELDS}"),
             "-evalue",
-            "1e-10",
+            &evalue.to_string(),
             "-max_target_seqs",
             "50",
             "-num_threads",

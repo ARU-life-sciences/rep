@@ -399,6 +399,18 @@ fn classify_command() -> clap::Command {
                 .value_parser(["blastx", "diamond"]),
         )
         .arg(
+            Arg::new("nucl-task")
+                .long("nucl-task")
+                .default_value("blastn")
+                .value_parser(["blastn", "dc-megablast", "megablast"]),
+        )
+        .arg(
+            Arg::new("nucl-evalue")
+                .long("nucl-evalue")
+                .default_value("1e-5")
+                .value_parser(value_parser!(f64)),
+        )
+        .arg(
             Arg::new("copies")
                 .long("copies")
                 .help("`rep recover-copies` output directory: adds copy number, TSD and flank evidence")
@@ -448,6 +460,8 @@ where
     config.all_families = m.get_flag("all");
     config.pfam = m.get_one::<PathBuf>("pfam").cloned();
     config.copies_dir = m.get_one::<PathBuf>("copies").cloned();
+    config.nucl_task = m.get_one::<String>("nucl-task").expect("defaulted").clone();
+    config.nucl_evalue = *m.get_one::<f64>("nucl-evalue").expect("defaulted");
     config.threads = *m.get_one::<usize>("threads").expect("defaulted");
     config.evalue = *m.get_one::<f64>("evalue").expect("defaulted");
     config.backend = m

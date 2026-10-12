@@ -51,6 +51,9 @@ pub struct ClassifyConfig {
     pub all_families: bool,
     pub threads: usize,
     pub evalue: f64,
+    /// BLASTN task and E-value for the nucleotide library search.
+    pub nucl_task: String,
+    pub nucl_evalue: f64,
     pub backend: HomologyBackend,
     pub structure: StructureParams,
     pub thresholds: DecisionThresholds,
@@ -70,6 +73,8 @@ impl ClassifyConfig {
             all_families: false,
             threads: 1,
             evalue: 1e-5,
+            nucl_task: "blastn".into(),
+            nucl_evalue: 1e-5,
             backend: HomologyBackend::Blastx,
             structure: StructureParams::default(),
             thresholds: DecisionThresholds::default(),
@@ -368,7 +373,15 @@ fn search_library(
     )?;
     let hits_path = c.output_dir.join(format!("{kind}_hits.tsv"));
     let cmd = match (nucleotide, c.backend) {
-        (true, _) => blastn_library_command(exe("blastn"), &db, queries, &hits_path, c.threads),
+        (true, _) => blastn_library_command(
+            exe("blastn"),
+            &db,
+            queries,
+            &hits_path,
+            c.threads,
+            &c.nucl_task,
+            c.nucl_evalue,
+        ),
         (false, HomologyBackend::Blastx) => {
             blastx_command(exe("blastx"), &db, queries, &hits_path, c.threads, c.evalue)
         }

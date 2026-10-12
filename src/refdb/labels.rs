@@ -128,6 +128,8 @@ pub fn repbase_label(keywords: &str) -> Option<String> {
             label.starts_with(c)
                 || (c == "Other" && matches!(label, "tRNA" | "rRNA" | "snRNA"))
                 || (c == "LINE" && label.starts_with("PLE"))
+                // Repbase files Helitrons under the DNA transposon class
+                || (c == "DNA" && label.starts_with("RC/"))
         });
         if consistent {
             return Some(label.to_owned());
@@ -185,6 +187,10 @@ mod tests {
             ("tRNA; Multicopy gene;", "tRNA"),
             ("Caulimoviridae; Integrated Virus;", "LTR/Caulimovirus"),
             ("Troyka; LTR Retrotransposon;", "LTR/Troyka"),
+            (
+                "Helitron; DNA transposon; Transposable Element;",
+                "RC/Helitron",
+            ),
         ] {
             assert_eq!(repbase_label(kw).as_deref(), Some(label), "{kw}");
         }
