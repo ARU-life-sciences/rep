@@ -24,6 +24,8 @@ pub enum DispositionKind {
     LowComplexity,
     /// Matches a non-TE reference: RNA genes, multicopy host genes, artefacts.
     HostOrArtefact,
+    /// A confirmed dispersed, multicopy repeat with no TE hallmark yet.
+    InterspersedRepeat,
     NovelCandidate,
     Unresolved,
 }
@@ -37,6 +39,7 @@ impl DispositionKind {
             Self::Satellite => "satellite",
             Self::LowComplexity => "low_complexity",
             Self::HostOrArtefact => "host_or_artefact",
+            Self::InterspersedRepeat => "interspersed_repeat",
             Self::NovelCandidate => "novel_candidate",
             Self::Unresolved => "unresolved",
         }
@@ -484,10 +487,18 @@ pub fn apply_copy_evidence(mut d: Disposition, c: &CopyEvidence, length: usize) 
         DispositionKind::Unresolved
             if c.loci >= 10 && c.full_length >= 3 && !conserved_flanks && length >= 120 =>
         {
-            // a dispersed, multi-copy repeat that nothing else explains
-            d.kind = DispositionKind::NovelCandidate;
-            d.confidence = Confidence::Low;
-            d.evidence.push("dispersed_multicopy_repeat".into());
+            // a real dispersed repeat; only a TE hallmark (here, a TSD) makes it a
+            // novel TE candidate, since every RepeatModeler family is multicopy
+            if c.tsd.is_some() {
+                d.kind = DispositionKind::NovelCandidate;
+                d.confidence = Confidence::Low;
+                d.evidence
+                    .push("dispersed_multicopy_repeat_with_tsd".into());
+            } else {
+                d.kind = DispositionKind::InterspersedRepeat;
+                d.confidence = Confidence::Medium;
+                d.evidence.push("dispersed_multicopy_repeat".into());
+            }
         }
         _ => {}
     }
@@ -917,6 +928,7 @@ mod tests {
                 copies_evaluated: 10,
             }),
             flank_similarity: Some(flanks),
+            genome_bp: 0,
         }
     }
 
@@ -993,6 +1005,12 @@ mod tests {
         let d = apply_copy_evidence(
             disposition(DispositionKind::Unresolved, "Unknown", Confidence::Low),
             &copies(40, 6, None, 0.3),
+            500,
+        );
+        assert_eq!(d.kind, DispositionKind::InterspersedRepeat);
+        let d = apply_copy_evidence(
+            disposition(DispositionKind::Unresolved, "Unknown", Confidence::Low),
+            &copies(40, 6, Some((5, 0.7)), 0.3),
             500,
         );
         assert_eq!(d.kind, DispositionKind::NovelCandidate);

@@ -399,6 +399,19 @@ fn classify_command() -> clap::Command {
                 .value_parser(["blastx", "diamond"]),
         )
         .arg(
+            Arg::new("rm-out")
+                .long("rm-out")
+                .help("RepeatMasker .out of the genome with this library: copy number, age and genome bp")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("genome")
+                .long("genome")
+                .requires("rm-out")
+                .help("Genome FASTA (plain or .gz) for TSD and flank analysis with --rm-out")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
             Arg::new("nucl-task")
                 .long("nucl-task")
                 .default_value("blastn")
@@ -460,6 +473,8 @@ where
     config.all_families = m.get_flag("all");
     config.pfam = m.get_one::<PathBuf>("pfam").cloned();
     config.copies_dir = m.get_one::<PathBuf>("copies").cloned();
+    config.rm_out = m.get_one::<PathBuf>("rm-out").cloned();
+    config.genome = m.get_one::<PathBuf>("genome").cloned();
     config.nucl_task = m.get_one::<String>("nucl-task").expect("defaulted").clone();
     config.nucl_evalue = *m.get_one::<f64>("nucl-evalue").expect("defaulted");
     config.threads = *m.get_one::<usize>("threads").expect("defaulted");

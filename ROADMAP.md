@@ -15,7 +15,8 @@ A disposition is one of:
 | `chimeric` | Homology to two or more incompatible TE classes in different regions |
 | `simple_repeat` / `satellite` | Tandem periodicity explains the family (period recorded) |
 | `low_complexity` | Compositionally biased, non-periodic |
-| `novel_candidate` | TE hallmarks (terminal repeats, coding capacity, poly-A, TSDs, copy number) without known homology |
+| `novel_candidate` | TE hallmarks (terminal repeats, TSDs, coding capacity, unusual domain architecture) without known homology |
+| `interspersed_repeat` | A confirmed dispersed multicopy repeat (unique flanks, many full-length copies) with no TE hallmark yet |
 | `host_or_artefact` | Matches an RNA gene or other non-TE reference, or keeps such a label from RepeatClassifier |
 | `unresolved` | No evidence either way; the missing evidence is recorded |
 
@@ -102,6 +103,10 @@ be right first.
 - [ ] Copy recovery speed: about 23 s per family, dominated by MAFFT; align families in parallel.
 - [ ] Boundary sharpness from the coverage profile of consensus positions across copies.
 - [ ] Feed `reputils curate` outputs (refined consensus, architecture hints) back in.
+- [x] Copy evidence from existing RepeatMasker annotations (`classify --rm-out <.out> --genome <fa.gz>`):
+      insertions from RepeatMasker IDs, consensus coverage, divergence and genome bp, with TSDs and flanks cut
+      from the genome. *Cloeon dipterum*: 2.3 min against about 6 h for copy recovery. 539 of the 559
+      ensembl libraries have a `.out`.
 
 ### M3 – Protein-domain architecture (core done)
 

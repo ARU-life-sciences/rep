@@ -65,6 +65,8 @@ pub struct CopyEvidence {
     pub tsd: Option<Tsd>,
     /// Mean pairwise identity of copy flanks (0–1); `None` with < 2 copies.
     pub flank_similarity: Option<f64>,
+    /// Genomic base pairs annotated as this family (RepeatMasker input only).
+    pub genome_bp: u64,
 }
 
 /// Read copy evidence for one family from its copy-recovery directory.

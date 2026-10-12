@@ -12,6 +12,7 @@ mod domains;
 mod homology;
 mod library;
 mod pipeline;
+mod rmout;
 mod structure;
 mod taxonomy;
 
@@ -34,6 +35,7 @@ pub use pipeline::{
     run_classify, run_classify_with_runner, ClassifyConfig, ClassifyResult, ClassifySummary,
     FamilyClassification, SCHEMA_VERSION,
 };
+pub use rmout::{copy_evidence_from_rm, load_genome, read_rm_out, RmHit};
 pub use structure::{
     analyse, Orf, StructuralEvidence, StructureParams, Tail, Tandem, TerminalRepeat,
 };

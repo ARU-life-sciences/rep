@@ -24,6 +24,7 @@ use super::{
         HomologyBackend, HomologySummary, ProteinHit,
     },
     library::{read_library, LibraryFamily},
+    rmout::{copy_evidence_from_rm, load_genome, read_rm_out},
     structure::{analyse, StructuralEvidence, StructureParams},
     taxonomy::top_level,
 };
@@ -45,6 +46,11 @@ pub struct ClassifyConfig {
     pub pfam: Option<PathBuf>,
     /// `rep recover-copies` output directory for copy-based evidence.
     pub copies_dir: Option<PathBuf>,
+    /// RepeatMasker `.out` annotation of the genome with this library; used
+    /// for copy evidence in preference to `copies_dir`.
+    pub rm_out: Option<PathBuf>,
+    /// Genome FASTA (plain or .gz) for TSD and flank analysis with `rm_out`.
+    pub genome: Option<PathBuf>,
     pub copy_params: CopyParams,
     pub output_dir: PathBuf,
     /// Classify every family, not only `Unknown`s (useful for validation).
@@ -68,6 +74,8 @@ impl ClassifyConfig {
             index_dir: None,
             pfam: None,
             copies_dir: None,
+            rm_out: None,
+            genome: None,
             copy_params: CopyParams::default(),
             output_dir,
             all_families: false,
@@ -105,6 +113,8 @@ impl ClassifyConfig {
             self.proteins.as_ref().map(|p| ("proteins", p)),
             self.nucleotides.as_ref().map(|p| ("nucleotides", p)),
             self.pfam.as_ref().map(|p| ("pfam", p)),
+            self.rm_out.as_ref().map(|p| ("rm_out", p)),
+            self.genome.as_ref().map(|p| ("genome", p)),
         ];
         for (label, path) in inputs.into_iter().flatten() {
             if !path.is_file() {
@@ -223,6 +233,22 @@ pub fn run_classify_with_runner(
             .push(hit);
     }
 
+    // copy evidence from an existing RepeatMasker annotation, if given
+    let rm_hits = match &c.rm_out {
+        Some(path) => {
+            eprintln!("Reading RepeatMasker annotation {}", path.display());
+            Some(read_rm_out(path)?)
+        }
+        None => None,
+    };
+    let genome = match (&rm_hits, &c.genome) {
+        (Some(_), Some(path)) => {
+            eprintln!("Loading genome {}", path.display());
+            Some(load_genome(path)?)
+        }
+        _ => None,
+    };
+
     let mut families = Vec::new();
     for (family, structure) in selected.iter().zip(structures) {
         let homology = summarise(
@@ -245,13 +271,19 @@ pub fn run_classify_with_runner(
             &structure,
             &c.thresholds,
         );
-        let copies = match &c.copies_dir {
-            Some(dir) => read_copy_evidence(
+        let copies = match (&rm_hits, &c.copies_dir) {
+            (Some(rm), _) => Some(copy_evidence_from_rm(
+                rm.get(&family.name).map_or(&[][..], Vec::as_slice),
+                family.seq.len(),
+                genome.as_ref(),
+                &c.copy_params,
+            )),
+            (None, Some(dir)) => read_copy_evidence(
                 &dir.join("families")
                     .join(crate::copy_recovery::family_dir_name(&family.id)),
                 &c.copy_params,
             )?,
-            None => None,
+            (None, None) => None,
         };
         if let Some(evidence) = &copies {
             disposition = apply_copy_evidence(disposition, evidence, family.seq.len());
@@ -581,7 +613,7 @@ fn write_outputs(
          best_class\tbest_subject\tbest_bitscore\tclass_coverage\tchimeric_classes\t\
          nucl_best_class\tnucl_best_subject\tnucl_bitscore\tnucl_coverage\tnucl_identity\tnucl_chimeric_classes\t\
          domain_architecture\tdomain_class\tdomain_novelty\t\
-         copy_loci\tcopy_full_length\tcopy_identity\ttsd_length\ttsd_motif\ttsd_support\tflank_similarity\t\
+         copy_loci\tcopy_full_length\tcopy_identity\tgenome_bp\ttsd_length\ttsd_motif\ttsd_support\tflank_similarity\t\
          ltr_length\tltr_identity\ttir_length\ttir_identity\ttail\ttandem_period\t\
          tandem_identity\tlongest_orf_aa\tn_orfs\tgc\tevidence\twarnings\n",
     );
@@ -592,7 +624,7 @@ fn write_outputs(
         let opt = |v: Option<String>| v.unwrap_or_default();
         writeln!(
             tsv,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
             f.family_id,
             f.original_label.as_deref().unwrap_or(""),
             s.length,
@@ -617,6 +649,7 @@ fn write_outputs(
             opt(f.copies.as_ref().map(|c| c.loci.to_string())),
             opt(f.copies.as_ref().map(|c| c.full_length.to_string())),
             opt(f.copies.as_ref().map(|c| format!("{:.1}", c.mean_identity))),
+            opt(f.copies.as_ref().map(|c| c.genome_bp.to_string())),
             opt(f.copies.as_ref().and_then(|c| c.tsd.as_ref()).map(|t| t.length.to_string())),
             opt(f.copies.as_ref().and_then(|c| c.tsd.as_ref()).map(|t| t.motif.clone())),
             opt(f.copies.as_ref().and_then(|c| c.tsd.as_ref()).map(|t| format!("{:.2}", t.support))),
