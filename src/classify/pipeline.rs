@@ -347,22 +347,25 @@ fn search_library(
             HomologyBackend::Diamond => "diamond",
         }
     };
-    let db = index_dir.join(format!("{kind}.{backend}"));
-    let stamp_path = index_dir.join(format!("{kind}.{backend}.stamp"));
     let stamp = library_stamp(&library)?;
-    if fs::read_to_string(&stamp_path).ok().as_deref() != Some(stamp.as_str()) {
-        let cmd = match (nucleotide, c.backend) {
-            (true, _) => makeblastdb_nucleotide_command(exe("makeblastdb"), &library, &db),
-            (false, HomologyBackend::Blastx) => {
-                makeblastdb_protein_command(exe("makeblastdb"), &library, &db)
-            }
-            (false, HomologyBackend::Diamond) => {
-                diamond_makedb_command(exe("diamond"), &library, &db)
-            }
-        };
-        run(cmd, "index construction")?;
-        fs::write(&stamp_path, &stamp)?;
-    }
+    let db = ensure_index(
+        &index_dir,
+        &format!("{kind}.{backend}"),
+        "db",
+        &stamp,
+        |db| {
+            let cmd = match (nucleotide, c.backend) {
+                (true, _) => makeblastdb_nucleotide_command(exe("makeblastdb"), &library, db),
+                (false, HomologyBackend::Blastx) => {
+                    makeblastdb_protein_command(exe("makeblastdb"), &library, db)
+                }
+                (false, HomologyBackend::Diamond) => {
+                    diamond_makedb_command(exe("diamond"), &library, db)
+                }
+            };
+            run(cmd, "index construction").map(drop)
+        },
+    )?;
     let hits_path = c.output_dir.join(format!("{kind}_hits.tsv"));
     let cmd = match (nucleotide, c.backend) {
         (true, _) => blastn_library_command(exe("blastn"), &db, queries, &hits_path, c.threads),
@@ -384,6 +387,79 @@ fn search_library(
         fs::write(&hits_path, "")?;
     }
     parse_protein_hits(&hits_path)
+}
+
+/// Return `<index_dir>/<name>/<file>`, building it with `build` unless the
+/// directory's stamp matches. Builds happen in a private directory that is
+/// then renamed into place, so concurrent runs sharing `index_dir` never see
+/// a partial index. (BLAST databases cannot be renamed file by file because
+/// they record their own name.)
+fn ensure_index(
+    index_dir: &Path,
+    name: &str,
+    file: &str,
+    stamp: &str,
+    build: impl FnOnce(&Path) -> Result<()>,
+) -> Result<PathBuf> {
+    let final_dir = index_dir.join(name);
+    if fs::read_to_string(final_dir.join("stamp")).ok().as_deref() == Some(stamp) {
+        return Ok(final_dir.join(file));
+    }
+    // PIDs repeat across hosts and containers, so add a timestamp
+    let token = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let tmp = index_dir.join(format!(".tmp-{token}-{name}"));
+    if tmp.exists() {
+        fs::remove_dir_all(&tmp)?;
+    }
+    fs::create_dir_all(&tmp)?;
+    if let Err(e) = build(&tmp.join(file)) {
+        fs::remove_dir_all(&tmp).ok();
+        return Err(e);
+    }
+    fs::write(tmp.join("stamp"), stamp)?;
+    let current = |dir: &Path| fs::read_to_string(dir.join("stamp")).ok().as_deref() == Some(stamp);
+    let mut published = false;
+    for attempt in 0..5 {
+        // renaming onto a missing directory is atomic; it fails if one exists
+        if fs::rename(&tmp, &final_dir).is_ok() {
+            published = true;
+            break;
+        }
+        if current(&final_dir) {
+            break; // another run published an up-to-date index first
+        }
+        // a stale index is in the way: move it aside (it may already be gone)
+        let old = index_dir.join(format!(".old-{token}-{attempt}-{name}"));
+        match fs::rename(&final_dir, &old) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if !published {
+        fs::remove_dir_all(&tmp).ok();
+        if !current(&final_dir) {
+            return Err(cli_error(format!(
+                "could not publish index {}",
+                final_dir.display()
+            )));
+        }
+    }
+    // replaced indexes may still be open (NFS keeps them busy); remove what we can
+    for entry in fs::read_dir(index_dir)?.flatten() {
+        let n = entry.file_name().to_string_lossy().into_owned();
+        if n.starts_with(".old-") && n.ends_with(&format!("-{name}")) {
+            fs::remove_dir_all(entry.path()).ok();
+        }
+    }
+    Ok(final_dir.join(file))
 }
 
 /// Identifies a library version for index reuse: path, size and modification time.
@@ -441,8 +517,6 @@ fn scan_domains(
     let exe = crate::copy_recovery::executable;
     let index_dir = c.index_dir.clone().unwrap_or_else(|| c.output_dir.clone());
     fs::create_dir_all(&index_dir)?;
-    let hmm = index_dir.join("te_domains.hmm");
-    let stamp_path = index_dir.join("te_domains.hmm.stamp");
     let stamp = format!(
         "{}{}",
         library_stamp(pfam)?,
@@ -452,19 +526,18 @@ fn scan_domains(
             .collect::<Vec<_>>()
             .join(",")
     );
-    if fs::read_to_string(&stamp_path).ok().as_deref() != Some(stamp.as_str()) {
-        let missing = extract_te_models(pfam, &hmm)?;
+    let hmm = ensure_index(&index_dir, "te_domains", "te_domains.hmm", &stamp, |hmm| {
+        let missing = extract_te_models(pfam, hmm)?;
         if !missing.is_empty() {
             eprintln!(
                 "TE domain models absent from this Pfam: {}",
                 missing.join(", ")
             );
         }
-        let mut press = hmmpress_command(exe("hmmpress"), &hmm);
+        let mut press = hmmpress_command(exe("hmmpress"), hmm);
         commands.push(command_line(&press));
-        run_checked(runner, &mut press, "hmmpress")?;
-        fs::write(&stamp_path, &stamp)?;
-    }
+        run_checked(runner, &mut press, "hmmpress").map(drop)
+    })?;
     let out = c.output_dir.join("domains.domtblout");
     let mut scan = hmmscan_command(exe("hmmscan"), &hmm, orfs, &out, c.threads);
     commands.push(command_line(&scan));
