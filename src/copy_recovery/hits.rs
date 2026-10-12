@@ -43,9 +43,11 @@ pub struct Hit {
 
 impl Hit {
     fn from_row(row: &csv::StringRecord) -> Result<Self> {
-        if row.len() != 12 && row.len() != 13 {
+        // Layout produced by `blastn_command`:
+        // qseqid sseqid qlen pident length mismatch gapopen qstart qend sstart send evalue bitscore
+        if row.len() != 13 {
             return Err(Error::new(ErrorKind::GenericCli(format!(
-                "Expected 12 or 13 copy-recovery BLAST columns, found {} in record {:?}",
+                "Expected 13 copy-recovery BLAST columns, found {} in record {:?}",
                 row.len(),
                 row
             ))));
@@ -83,8 +85,8 @@ impl Hit {
             } else {
                 (qstart.abs_diff(qend) + 1) as f64 / qlen as f64
             },
-            evalue: row[if row.len() == 12 { 10 } else { 11 }].parse()?,
-            bitscore: row[if row.len() == 12 { 11 } else { 12 }].parse()?,
+            evalue: row[11].parse()?,
+            bitscore: row[12].parse()?,
         })
     }
 }
@@ -112,5 +114,15 @@ mod tests {
         assert_eq!((hit.subject_start, hit.subject_end), (851, 900));
         assert_eq!(hit.matches, 47);
         assert_eq!(hit.query_coverage, 0.5);
+        assert_eq!(hit.evalue, 1e-20);
+        assert_eq!(hit.bitscore, 80.0);
+    }
+
+    #[test]
+    fn rejects_standard_twelve_column_rows() {
+        let row = csv::StringRecord::from(vec![
+            "fam", "chr1", "95.0", "50", "2", "1", "10", "59", "900", "851", "1e-20", "80",
+        ]);
+        assert!(Hit::from_row(&row).is_err());
     }
 }

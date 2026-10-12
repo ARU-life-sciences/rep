@@ -69,6 +69,8 @@ pub fn run_curation_via_copy_recovery(matches: CliArgs, runner: &dyn CommandRunn
         orientation_threshold: 0.8,
         threads: matches.rmo_threads as usize,
         search_backend: crate::SearchBackend::Blastn,
+        blast_task: crate::copy_recovery::default_blast_task(),
+        evalue: crate::copy_recovery::default_evalue(),
         aligner: crate::Aligner::Mafft,
         force: false,
         resume: false,

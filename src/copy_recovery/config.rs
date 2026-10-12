@@ -45,6 +45,10 @@ pub struct CopyRecoveryConfig {
     pub orientation_threshold: f64,
     pub threads: usize,
     pub search_backend: SearchBackend,
+    #[serde(default = "default_blast_task")]
+    pub blast_task: String,
+    #[serde(default = "default_evalue")]
+    pub evalue: f64,
     pub aligner: Aligner,
     #[serde(default)]
     pub force: bool,
@@ -54,6 +58,14 @@ pub struct CopyRecoveryConfig {
     pub diversity_filter: bool,
     #[serde(default)]
     pub reputils: Option<PathBuf>,
+}
+
+pub fn default_blast_task() -> String {
+    "dc-megablast".into()
+}
+
+pub fn default_evalue() -> f64 {
+    1e-10
 }
 
 impl CopyRecoveryConfig {
@@ -66,6 +78,15 @@ impl CopyRecoveryConfig {
         }
         if !(0.0..=1.0).contains(&self.orientation_threshold) {
             return Err("orientation_threshold must be between 0 and 1".into());
+        }
+        if !matches!(
+            self.blast_task.as_str(),
+            "megablast" | "dc-megablast" | "blastn" | "blastn-short"
+        ) {
+            return Err(format!("unsupported BLAST task: {}", self.blast_task));
+        }
+        if self.evalue.is_nan() || self.evalue <= 0.0 {
+            return Err("evalue must be positive".into());
         }
         if self.force && self.resume {
             return Err("--force and --resume are mutually exclusive".into());

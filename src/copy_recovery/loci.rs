@@ -27,6 +27,9 @@ pub struct Locus {
     pub fragments: Vec<Hit>,
 }
 
+/// Query overlap (bp) tolerated between consecutive fragments of one locus.
+const MAX_QUERY_OVERLAP: u64 = 50;
+
 fn coherent(previous: &Hit, next: &Hit, max_gap: u64) -> bool {
     if previous.family_id != next.family_id
         || previous.subject_id != next.subject_id
@@ -35,9 +38,12 @@ fn coherent(previous: &Hit, next: &Hit, max_gap: u64) -> bool {
     {
         return false;
     }
+    // Fragments of one interrupted copy cover successive, essentially
+    // non-overlapping query ranges. Two separate copies that both start near
+    // the query 5' end must not be merged just because they are close.
     match previous.strand {
-        Strand::Plus => next.query_start >= previous.query_start,
-        Strand::Minus => next.query_end <= previous.query_end,
+        Strand::Plus => next.query_start + MAX_QUERY_OVERLAP > previous.query_end,
+        Strand::Minus => next.query_end < previous.query_start + MAX_QUERY_OVERLAP,
     }
 }
 
@@ -135,34 +141,57 @@ fn assign_ids(loci: &mut [Locus]) {
     }
 }
 
+/// Collapse overlapping loci of the same family on the same subject.
+///
+/// Every input locus is retained: the best-scoring locus in an overlapping
+/// cluster stays eligible and the others are marked `duplicate_of:<locus_id>`
+/// so rejected evidence remains auditable. Loci that were already excluded
+/// (for example as ambiguous-strand) never act as a cluster representative.
+/// Locus IDs assigned by [`merge_hits`] are preserved.
 pub fn collapse_overlapping_loci(mut loci: Vec<Locus>) -> Vec<Locus> {
     loci.sort_by(|a, b| {
-        (&a.family_id, &a.subject_id, a.start).cmp(&(&b.family_id, &b.subject_id, b.start))
+        (&a.family_id, &a.subject_id, a.start, &a.locus_id).cmp(&(
+            &b.family_id,
+            &b.subject_id,
+            b.start,
+            &b.locus_id,
+        ))
     });
-    let mut result: Vec<Locus> = Vec::new();
-    for mut locus in loci {
-        if let Some(previous) = result.last_mut() {
-            let overlap = previous.family_id == locus.family_id
-                && previous.subject_id == locus.subject_id
-                && locus.start < previous.end
-                && (previous.end.min(locus.end) - locus.start) * 2
-                    >= (previous.end - previous.start).min(locus.end - locus.start);
-            if overlap {
-                if locus.representative_score > previous.representative_score {
-                    previous.exclusion_reason = Some(format!("collapsed_into:{}", locus.locus_id));
-                    std::mem::swap(previous, &mut locus);
-                }
-                locus.selected = false;
-                locus.exclusion_reason = Some(format!("duplicate_of:{}", previous.locus_id));
-                continue;
-            }
+    let mut representative: Option<usize> = None;
+    for index in 0..loci.len() {
+        if loci[index].exclusion_reason.is_some() {
+            continue;
         }
-        result.push(locus);
+        let Some(rep) = representative else {
+            representative = Some(index);
+            continue;
+        };
+        let (previous, locus) = (&loci[rep], &loci[index]);
+        let overlap = previous.family_id == locus.family_id
+            && previous.subject_id == locus.subject_id
+            && locus.start < previous.end
+            && (previous.end.min(locus.end) - locus.start) * 2
+                >= (previous.end - previous.start).min(locus.end - locus.start);
+        if !overlap {
+            representative = Some(index);
+            continue;
+        }
+        let (loser, winner) = if locus.representative_score > previous.representative_score {
+            (rep, index)
+        } else {
+            (index, rep)
+        };
+        let reason = format!("duplicate_of:{}", loci[winner].locus_id);
+        loci[loser].selected = false;
+        loci[loser].exclusion_reason = Some(reason);
+        representative = Some(winner);
     }
-    assign_ids(&mut result);
-    result
+    loci.sort_by(|a, b| a.locus_id.cmp(&b.locus_id));
+    loci
 }
 
+/// Exclude overlapping opposite-strand loci whose coverage is too weak to
+/// decide the copy orientation.
 pub fn mark_ambiguous_strand_loci(loci: &mut [Locus], threshold: f64) {
     for i in 0..loci.len() {
         for j in (i + 1)..loci.len() {
@@ -185,14 +214,19 @@ pub fn mark_ambiguous_strand_loci(loci: &mut [Locus], threshold: f64) {
     }
 }
 
+/// Select up to `limit` eligible loci by descending score with deterministic
+/// tie-breaking. Loci that already carry an exclusion reason are never selected.
 pub fn rank_loci(loci: &mut [Locus], limit: usize, diversity_filter: bool) {
-    let mut order = (0..loci.len()).collect::<Vec<_>>();
+    let mut order = (0..loci.len())
+        .filter(|&index| loci[index].exclusion_reason.is_none())
+        .collect::<Vec<_>>();
     order.sort_by(|&a, &b| {
         loci[b]
             .representative_score
             .total_cmp(&loci[a].representative_score)
             .then_with(|| loci[a].subject_id.cmp(&loci[b].subject_id))
             .then_with(|| loci[a].start.cmp(&loci[b].start))
+            .then_with(|| loci[a].locus_id.cmp(&loci[b].locus_id))
     });
     let mut selected: Vec<usize> = Vec::new();
     for index in order {
@@ -278,6 +312,82 @@ mod tests {
             )
             .len(),
             1
+        );
+    }
+    #[test]
+    fn collapse_retains_duplicates_with_reason() {
+        let mut low = hit(1, 50, 10, 59, Strand::Plus);
+        low.bitscore = 10.0;
+        let loci = merge_hits(&[low], 10);
+        let mut high = merge_hits(&[hit(1, 100, 20, 119, Strand::Plus)], 10);
+        high[0].locus_id = "locus-000002".into();
+        let all = collapse_overlapping_loci(loci.into_iter().chain(high).collect());
+        assert_eq!(all.len(), 2);
+        assert_eq!(
+            all[0].exclusion_reason.as_deref(),
+            Some("duplicate_of:locus-000002")
+        );
+        assert!(all[1].exclusion_reason.is_none());
+    }
+    #[test]
+    fn ranking_never_selects_excluded_loci() {
+        let mut loci = merge_hits(
+            &[
+                hit(1, 30, 10, 39, Strand::Plus),
+                hit(1, 30, 20, 49, Strand::Minus),
+            ],
+            10,
+        );
+        mark_ambiguous_strand_loci(&mut loci, 0.8);
+        rank_loci(&mut loci, 10, false);
+        assert!(loci.iter().all(|l| !l.selected));
+        assert!(loci
+            .iter()
+            .all(|l| l.exclusion_reason.as_deref() == Some("ambiguous_strand")));
+    }
+    #[test]
+    fn ranking_limit_and_ties_are_deterministic() {
+        let mut loci = merge_hits(
+            &[
+                hit(1, 100, 1000, 1099, Strand::Plus),
+                hit(1, 100, 10, 109, Strand::Plus),
+                hit(1, 100, 5000, 5099, Strand::Plus),
+            ],
+            10,
+        );
+        rank_loci(&mut loci, 2, false);
+        let chosen = loci
+            .iter()
+            .filter(|l| l.selected)
+            .map(|l| l.start)
+            .collect::<Vec<_>>();
+        assert_eq!(chosen, vec![9, 999]);
+        assert_eq!(loci[2].exclusion_reason.as_deref(), Some("selection_limit"));
+    }
+    #[test]
+    fn does_not_merge_neighbouring_full_and_partial_copies() {
+        // full-length copy then a 5' truncated copy 8 kb downstream
+        assert_eq!(
+            merge_hits(
+                &[
+                    hit(1, 100, 1000, 1099, Strand::Plus),
+                    hit(1, 60, 9000, 9059, Strand::Plus)
+                ],
+                10_000
+            )
+            .len(),
+            2
+        );
+        assert_eq!(
+            merge_hits(
+                &[
+                    hit(1, 100, 1000, 1099, Strand::Minus),
+                    hit(40, 100, 9000, 9060, Strand::Minus)
+                ],
+                10_000
+            )
+            .len(),
+            2
         );
     }
 }

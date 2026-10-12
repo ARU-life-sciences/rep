@@ -13,7 +13,7 @@ mod pipeline;
 mod search;
 
 pub use align::mafft_command;
-pub use config::{Aligner, CopyRecoveryConfig, SearchBackend};
+pub use config::{default_blast_task, default_evalue, Aligner, CopyRecoveryConfig, SearchBackend};
 pub use extract::{clip_interval, reverse_complement, FastaSequenceProvider, SequenceProvider};
 pub use hits::{parse_blast_file, Hit, Strand};
 pub use loci::{collapse_overlapping_loci, merge_hits, rank_loci, Locus};

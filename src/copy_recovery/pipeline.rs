@@ -75,12 +75,21 @@ pub fn run_copy_recovery_with_runner(
     let mut cmd = makeblastdb_command(executable("makeblastdb"), &c.genome, &db);
     crate::command_runner::run_checked(r, &mut cmd, "makeblastdb")?;
     let blast = c.output_dir.join("hits.tsv");
-    let mut cmd = blastn_command(executable("blastn"), &db, &c.queries, &blast, c.threads);
+    let mut cmd = blastn_command(
+        executable("blastn"),
+        &db,
+        &c.queries,
+        &blast,
+        c.threads,
+        &c.blast_task,
+        c.evalue,
+    );
     crate::command_runner::run_checked(r, &mut cmd, "blastn")?;
     let hits = parse_blast_file(&blast)?;
     let provider = FastaSequenceProvider::from_file(&c.genome)?;
     let mafft_exe = executable("mafft");
     let mut fams = Vec::new();
+    let mut all_loci = Vec::new();
     let reader = fasta::Reader::from_file(&c.queries)?;
     for rec in reader.records() {
         let rec = rec?;
@@ -92,34 +101,30 @@ pub fn run_copy_recovery_with_runner(
             format!(">{}\n{}\n", id, String::from_utf8_lossy(rec.seq())),
         )?;
         let fh: Vec<Hit> = hits.iter().filter(|h| h.query_id == id).cloned().collect();
-        let mut loci = collapse_overlapping_loci(merge_hits(&fh, c.max_fragment_gap as u64));
+        let mut loci = merge_hits(&fh, c.max_fragment_gap as u64);
         mark_ambiguous_strand_loci(&mut loci, c.orientation_threshold);
+        let mut loci = collapse_overlapping_loci(loci);
         rank_loci(&mut loci, c.hits_per_family, c.diversity_filter);
         let nsel = loci.iter().filter(|l| l.selected).count();
         write_hits(&dir.join("hits.tsv"), &fh)?;
-        write_loci(&dir.join("loci.tsv"), &loci)?;
         let mut raw = String::new();
         let mut extended = String::new();
         let mut copies = String::from("family_id\tlocus_id\tsubject_id\tgenomic_start\tgenomic_end\tstrand\trequested_extended_start\trequested_extended_end\tactual_extended_start\tactual_extended_end\tleft_flank_actual\tright_flank_actual\treverse_complemented\tselected\textraction_status\talignment_status\texclusion_reason\n");
         let mut usable = 0usize;
-        for locus in loci.iter() {
+        for locus in loci.iter_mut() {
             let len = provider.contig_length(&locus.subject_id)?;
             let (rs, re) = (locus.start, locus.end);
             let (es, ee) = clip_interval(rs, re, len as usize, c.flank_length);
-            let mut raw_seq = provider.sequence(&locus.subject_id, rs.min(len), re.min(len))?;
-            let mut ext_seq = provider.sequence(&locus.subject_id, es as u64, ee as u64)?;
+            locus.extended_start = es as u64;
+            locus.extended_end = ee as u64;
             let rc = locus.strand == super::Strand::Minus;
-            if rc {
-                raw_seq = reverse_complement(&raw_seq);
-                ext_seq = reverse_complement(&ext_seq);
-            }
-            let status = if locus.selected {
-                usable += 1;
-                "success"
-            } else {
-                "not_selected"
-            };
             if locus.selected {
+                let mut raw_seq = provider.sequence(&locus.subject_id, rs.min(len), re.min(len))?;
+                let mut ext_seq = provider.sequence(&locus.subject_id, es as u64, ee as u64)?;
+                if rc {
+                    raw_seq = reverse_complement(&raw_seq);
+                    ext_seq = reverse_complement(&ext_seq);
+                }
                 raw.push_str(&format!(
                     ">locus_id={} family_id={}\n{}\n",
                     locus.locus_id,
@@ -133,6 +138,12 @@ pub fn run_copy_recovery_with_runner(
                     String::from_utf8_lossy(&ext_seq)
                 ));
             }
+            let status = if locus.selected {
+                usable += 1;
+                "success"
+            } else {
+                "not_selected"
+            };
             copies.push_str(&format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 locus.family_id,
@@ -141,12 +152,12 @@ pub fn run_copy_recovery_with_runner(
                 rs,
                 re,
                 locus.strand.as_str(),
-                es.saturating_sub(c.flank_length),
-                ee.saturating_add(c.flank_length),
+                rs as i64 - c.flank_length as i64,
+                re + c.flank_length as u64,
                 es,
                 ee,
-                es.saturating_sub(rs as usize),
-                ee.saturating_sub(re as usize),
+                rs - es as u64,
+                ee as u64 - re,
                 rc,
                 locus.selected,
                 status,
@@ -159,6 +170,9 @@ pub fn run_copy_recovery_with_runner(
             ));
         }
         fs::write(dir.join("copies.tsv"), copies)?;
+        write_loci(&dir.join("loci.tsv"), &loci)?;
+        write_loci_bed(&dir.join("loci.bed"), &loci)?;
+        all_loci.extend(loci.iter().cloned());
         fs::write(dir.join("copies.raw.fa"), raw)?;
         fs::write(dir.join("copies.extended.fa"), &extended)?;
         if usable == 0 {
@@ -199,6 +213,7 @@ pub fn run_copy_recovery_with_runner(
             n_selected: nsel,
         });
     }
+    write_loci(&c.output_dir.join("loci.tsv"), &all_loci)?;
     let m = Manifest {
         schema_version: SCHEMA_VERSION.into(),
         rep_version: env!("CARGO_PKG_VERSION").into(),
@@ -226,8 +241,7 @@ pub fn run_copy_recovery_with_runner(
 fn fingerprint(c: &CopyRecoveryConfig) -> Result<String> {
     let mut h = Sha256::new();
     for p in [&c.genome, &c.queries] {
-        let b = fs::read(p)?;
-        h.update(&b);
+        std::io::copy(&mut fs::File::open(p)?, &mut h)?;
     }
     h.update(serde_json::to_vec(c).map_err(|e| Error::new(ErrorKind::GenericCli(e.to_string())))?);
     Ok(format!("{:x}", h.finalize()))
@@ -310,22 +324,43 @@ fn write_hits(p: &Path, h: &[Hit]) -> Result<()> {
     Ok(())
 }
 fn write_loci(p: &Path, l: &[super::Locus]) -> Result<()> {
-    let mut s: String="family_id\tlocus_id\tsubject_id\tstart\tend\tstrand\tn_fragments\tbest_bitscore\tcombined_query_coverage\trepresentative_score\tselected\texclusion_reason\n".into();
+    let mut s: String="family_id\tlocus_id\tsubject_id\tstart\tend\textended_start\textended_end\tstrand\tn_fragments\tbest_bitscore\tcombined_query_coverage\tpercent_identity\trepresentative_score\tselected\texclusion_reason\n".into();
     for x in l {
         s.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             x.family_id,
             x.locus_id,
             x.subject_id,
             x.start,
             x.end,
+            x.extended_start,
+            x.extended_end,
             x.strand.as_str(),
             x.n_fragments,
             x.best_bitscore,
             x.combined_query_coverage,
+            x.percent_identity,
             x.representative_score,
             x.selected,
             x.exclusion_reason.as_deref().unwrap_or("")
+        ));
+    }
+    fs::write(p, s)?;
+    Ok(())
+}
+/// BED6 (0-based half-open) of every locus; the name column is the locus ID and
+/// the score column is 1 for selected loci, 0 otherwise.
+fn write_loci_bed(p: &Path, l: &[super::Locus]) -> Result<()> {
+    let mut s = String::new();
+    for x in l {
+        s.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            x.subject_id,
+            x.start,
+            x.end,
+            x.locus_id,
+            u8::from(x.selected),
+            x.strand.as_str()
         ));
     }
     fs::write(p, s)?;

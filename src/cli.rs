@@ -153,61 +153,194 @@ pub fn parse_args() -> Result<CliArgs> {
     })
 }
 
-pub fn parse_recover_copies_args() -> Result<crate::CopyRecoveryConfig> {
+fn recover_copies_command() -> clap::Command {
     use clap::{Arg, Command};
-    let m = Command::new("recover-copies")
-        .arg(Arg::new("queries").long("queries").required(true))
-        .arg(Arg::new("genome").long("genome").required(true))
-        .arg(Arg::new("out").long("out").required(true))
+    Command::new("recover-copies")
+        .about("Recover, extract and align genomic copies of candidate repeat families.")
+        .arg(
+            Arg::new("queries")
+                .long("queries")
+                .required(true)
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("genome")
+                .long("genome")
+                .required(true)
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("out")
+                .long("out")
+                .required(true)
+                .value_parser(value_parser!(PathBuf)),
+        )
         .arg(
             Arg::new("flank-length")
                 .long("flank-length")
-                .default_value("2000"),
+                .default_value("2000")
+                .value_parser(value_parser!(usize)),
         )
         .arg(
             Arg::new("hits-per-family")
                 .long("hits-per-family")
-                .default_value("20"),
+                .default_value("20")
+                .value_parser(value_parser!(usize)),
         )
         .arg(
             Arg::new("max-fragment-gap")
                 .long("max-fragment-gap")
-                .default_value("10000"),
+                .default_value("10000")
+                .value_parser(value_parser!(usize)),
         )
         .arg(
             Arg::new("orientation-threshold")
                 .long("orientation-threshold")
-                .default_value("0.8"),
+                .default_value("0.8")
+                .value_parser(value_parser!(f64)),
         )
-        .arg(Arg::new("threads").long("threads").default_value("1"))
+        .arg(
+            Arg::new("threads")
+                .long("threads")
+                .default_value("1")
+                .value_parser(value_parser!(usize)),
+        )
         .arg(
             Arg::new("search-backend")
                 .long("search-backend")
                 .default_value("blastn"),
         )
+        .arg(
+            Arg::new("blast-task")
+                .long("blast-task")
+                .default_value("dc-megablast")
+                .value_parser(["megablast", "dc-megablast", "blastn", "blastn-short"]),
+        )
+        .arg(
+            Arg::new("evalue")
+                .long("evalue")
+                .default_value("1e-10")
+                .value_parser(value_parser!(f64)),
+        )
         .arg(Arg::new("aligner").long("aligner").default_value("mafft"))
-        .arg(Arg::new("force").long("force").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("diversity-filter")
+                .long("diversity-filter")
+                .help("Skip selected loci starting within 100 bp of an already selected locus.")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("force")
+                .long("force")
+                .action(ArgAction::SetTrue)
+                .conflicts_with("resume"),
+        )
         .arg(Arg::new("resume").long("resume").action(ArgAction::SetTrue))
-        .get_matches_from(std::env::args().skip(1));
-    let get = |n: &str| m.get_one::<String>(n).unwrap();
-    Ok(crate::CopyRecoveryConfig {
-        genome: get("genome").into(),
-        queries: get("queries").into(),
-        output_dir: get("out").into(),
-        flank_length: get("flank-length").parse().unwrap(),
-        hits_per_family: get("hits-per-family").parse().unwrap(),
-        max_fragment_gap: get("max-fragment-gap").parse().unwrap(),
-        orientation_threshold: get("orientation-threshold").parse().unwrap(),
-        threads: get("threads").parse().unwrap(),
-        search_backend: get("search-backend")
+}
+
+pub fn parse_recover_copies_args() -> Result<crate::CopyRecoveryConfig> {
+    // argv[0] is the binary and argv[1] is the `recover-copies` subcommand name
+    recover_copies_from(std::env::args_os().skip(1))
+}
+
+fn recover_copies_from<I, T>(args: I) -> Result<crate::CopyRecoveryConfig>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let m = recover_copies_command()
+        .try_get_matches_from(args)
+        .unwrap_or_else(|e| e.exit());
+    let path = |n: &str| m.get_one::<PathBuf>(n).cloned().expect("required by clap");
+    let num = |n: &str| *m.get_one::<usize>(n).expect("defaulted by clap");
+    let config = crate::CopyRecoveryConfig {
+        genome: path("genome"),
+        queries: path("queries"),
+        output_dir: path("out"),
+        flank_length: num("flank-length"),
+        hits_per_family: num("hits-per-family"),
+        max_fragment_gap: num("max-fragment-gap"),
+        orientation_threshold: *m
+            .get_one::<f64>("orientation-threshold")
+            .expect("defaulted"),
+        threads: num("threads"),
+        search_backend: m
+            .get_one::<String>("search-backend")
+            .expect("defaulted")
             .parse()
             .map_err(|e: String| Error::new(ErrorKind::GenericCli(e)))?,
-        aligner: get("aligner")
+        blast_task: m
+            .get_one::<String>("blast-task")
+            .expect("defaulted")
+            .clone(),
+        evalue: *m.get_one::<f64>("evalue").expect("defaulted"),
+        aligner: m
+            .get_one::<String>("aligner")
+            .expect("defaulted")
             .parse()
             .map_err(|e: String| Error::new(ErrorKind::GenericCli(e)))?,
         force: m.get_flag("force"),
         resume: m.get_flag("resume"),
-        diversity_filter: false,
+        diversity_filter: m.get_flag("diversity-filter"),
         reputils: None,
-    })
+    };
+    for (label, p) in [("genome", &config.genome), ("queries", &config.queries)] {
+        if !p.is_file() {
+            return Err(Error::new(ErrorKind::GenericCli(format!(
+                "--{label} is not a regular file: {}",
+                p.display()
+            ))));
+        }
+    }
+    config
+        .validate()
+        .map_err(|e| Error::new(ErrorKind::GenericCli(e)))?;
+    Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recover_copies_parses_typed_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let fa = dir.path().join("x.fa");
+        std::fs::write(&fa, ">a\nACGT\n").unwrap();
+        let fa = fa.to_str().unwrap();
+        let c = recover_copies_from([
+            "recover-copies",
+            "--queries",
+            fa,
+            "--genome",
+            fa,
+            "--out",
+            "o",
+            "--evalue",
+            "1e-5",
+            "--blast-task",
+            "blastn",
+            "--diversity-filter",
+        ])
+        .unwrap();
+        assert_eq!(c.blast_task, "blastn");
+        assert_eq!(c.evalue, 1e-5);
+        assert!(c.diversity_filter);
+        assert_eq!(c.hits_per_family, 20);
+    }
+
+    #[test]
+    fn recover_copies_rejects_missing_inputs() {
+        let err = recover_copies_from([
+            "recover-copies",
+            "--queries",
+            "/nonexistent.fa",
+            "--genome",
+            "/nonexistent.fa",
+            "--out",
+            "o",
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("not a regular file"));
+    }
 }
