@@ -4,6 +4,7 @@ pub mod cli; // Command-line argument parsing
 pub mod command_runner;
 pub mod copy_recovery;
 pub mod curation;
+pub mod discover; // cross-species clustering and novel-class discovery
 pub mod error; // Error types and handling
 pub mod parse_blast; // BLAST outfmt 7 parser
 pub mod refdb; // layered TE reference database

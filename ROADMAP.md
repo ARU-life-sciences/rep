@@ -125,16 +125,19 @@ be right first.
       (cluster → align → `hmmbuild`) and scan them alongside the Pfam subset.
 - [ ] Host-gene flags: scan ORFs that lack TE domains against full Pfam (kinases, zinc fingers, ...).
 
-### M4 – Novelty discovery and negative filters
+### M4 – Novelty discovery and negative filters (started)
 
-- All-vs-all clustering of residual Unknowns (BLASTN or MMseqs2) into Unknown groups, so
-  the same novel element found many times by RepeatModeler is treated as one class candidate.
-- Protein-level clustering of ORFs across groups, to find novel element families that share a protein.
-- Novel domain combinations, for example YR together with a helicase, or a transposase next to an unusual accessory domain.
-- Novelty score: hallmarks × copy number × (1 − best homology) × structural consistency.
-- Negative filters: rRNA, tRNA and snRNA (Infernal and Rfam), organellar inserts, segmental
-  duplications, and multi-copy host genes.
-- Per-candidate HTML or TSV evidence report.
+`rep discover --results <dir of classify --all outputs> --out <dir> [--taxa taxa.tsv]`:
+- [x] Pool all families with metadata (species, taxon, labels, dispositions, hallmarks, genome bp).
+- [x] Family clusters: MMseqs2 `easy-linclust` at 80% identity and 80% coverage (both strands checked).
+- [x] Groups: family clusters linked through ORF protein clusters (30% identity, 50% coverage).
+      Protein clusters whose labelled members span classes are not used (bridges such as captured genes).
+- [x] Label propagation to Unknowns from labelled cluster or group members (purity ≥ 0.75), with
+      leave-one-out accuracy. 20-library test: 95.2% (family clusters, n=3,005) and 98.0% (groups, n=7,845).
+- [x] Novel groups (no labelled member) ranked by species breadth, abundance and TE hallmarks.
+- [ ] Full run on all 559 libraries, then with copy evidence (v3 classify with `--rm-out`).
+- [ ] Negative filters: rRNA, tRNA and snRNA (Infernal and Rfam), organellar inserts, multi-copy host genes.
+- [ ] Per-candidate evidence report (alignment of members, domain maps, copy landscape).
 
 ### M5 – Feedback into masking (partly done)
 

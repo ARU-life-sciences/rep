@@ -676,6 +676,72 @@ pub fn run_refdb() -> Result<()> {
     Ok(())
 }
 
+fn discover_command() -> clap::Command {
+    use clap::{Arg, Command};
+    let num = |name: &'static str, default: &'static str| {
+        Arg::new(name)
+            .long(name)
+            .default_value(default)
+            .value_parser(value_parser!(f64))
+    };
+    Command::new("discover")
+        .about("Cluster families across many `rep classify --all` runs; propagate labels and rank novel groups.")
+        .arg(
+            Arg::new("results")
+                .long("results")
+                .required(true)
+                .help("Directory searched for classify outputs (classification.tsv + queries.fa)")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf)))
+        .arg(
+            Arg::new("taxa")
+                .long("taxa")
+                .help("TSV with scientific_name and class columns")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(Arg::new("threads").long("threads").default_value("1").value_parser(value_parser!(usize)))
+        .arg(num("family-identity", "0.8"))
+        .arg(num("family-coverage", "0.8"))
+        .arg(num("protein-identity", "0.3"))
+        .arg(num("protein-coverage", "0.5"))
+        .arg(num("min-purity", "0.75"))
+}
+
+/// Parse and run `rep discover ...`.
+pub fn run_discover() -> Result<()> {
+    let m = discover_command()
+        .try_get_matches_from(std::env::args_os().skip(1))
+        .unwrap_or_else(|e| e.exit());
+    let path = |n: &str| m.get_one::<PathBuf>(n).cloned().expect("required by clap");
+    let num = |n: &str| *m.get_one::<f64>(n).expect("defaulted");
+    let mut c = crate::discover::DiscoverConfig::new(path("results"), path("out"));
+    c.taxa = m.get_one::<PathBuf>("taxa").cloned();
+    c.threads = *m.get_one::<usize>("threads").expect("defaulted");
+    c.family_identity = num("family-identity");
+    c.family_coverage = num("family-coverage");
+    c.protein_identity = num("protein-identity");
+    c.protein_coverage = num("protein-coverage");
+    c.min_purity = num("min-purity");
+    let s = crate::discover::run_discover(&c, &crate::RealCommandRunner)?;
+    eprintln!(
+        "{} families from {} samples: {} family clusters, {} groups; propagated {} (family) + {} (group); \
+         leave-one-out accuracy {:.3} (family, n={}) / {:.3} (group, n={}); {} novel groups",
+        s.members,
+        s.samples,
+        s.family_clusters,
+        s.groups,
+        s.propagated_from_family_cluster,
+        s.propagated_from_group,
+        s.loo_family_cluster.accuracy,
+        s.loo_family_cluster.predicted,
+        s.loo_group.accuracy,
+        s.loo_group.predicted,
+        s.novel_groups
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

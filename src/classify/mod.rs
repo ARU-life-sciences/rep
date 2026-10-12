@@ -37,6 +37,6 @@ pub use pipeline::{
 };
 pub use rmout::{copy_evidence_from_rm, load_genome, read_rm_out, RmHit};
 pub use structure::{
-    analyse, Orf, StructuralEvidence, StructureParams, Tail, Tandem, TerminalRepeat,
+    analyse, orfs, Orf, StructuralEvidence, StructureParams, Tail, Tandem, TerminalRepeat,
 };
 pub use taxonomy::{class_from_protein_name, top_level};

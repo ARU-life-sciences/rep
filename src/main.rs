@@ -14,6 +14,7 @@ fn main() -> Result<()> {
                 )
             }),
         Some("refdb") => rep::cli::run_refdb(),
+        Some("discover") => rep::cli::run_discover(),
         _ => pipeline(),
     };
     match result {
