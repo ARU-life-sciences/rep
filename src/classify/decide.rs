@@ -230,6 +230,14 @@ pub fn decide(
                 confidence = confidence.lower();
             }
         }
+        if source == "nucleotide" && structure.length < 500 && best.best_subject_coverage < 0.1 {
+            // a short family matching a small piece of a long reference
+            warnings.push(format!(
+                "short_match_within_long_reference:{:.2}",
+                best.best_subject_coverage
+            ));
+            confidence = Confidence::Low;
+        }
         if let Some(inferred) = &domains.inferred {
             if top_level(inferred) == top_level(&best.class) {
                 evidence.push(format!("domains_agree:{inferred}"));
@@ -404,7 +412,7 @@ pub fn decide(
 
 /// Refine a disposition with evidence from recovered genomic copies:
 /// TSD length versus the class expectation, copy number, and flank conservation.
-pub fn apply_copy_evidence(mut d: Disposition, c: &CopyEvidence) -> Disposition {
+pub fn apply_copy_evidence(mut d: Disposition, c: &CopyEvidence, length: usize) -> Disposition {
     d.evidence.push(format!(
         "copies:loci={},full_length={},identity={:.1}",
         c.loci, c.full_length, c.mean_identity
@@ -448,7 +456,10 @@ pub fn apply_copy_evidence(mut d: Disposition, c: &CopyEvidence) -> Disposition 
                 d.confidence = d.confidence.lower();
             }
         }
-        DispositionKind::Unresolved if c.loci >= 10 && c.full_length >= 3 && !conserved_flanks => {
+        // tRNAs and other short multicopy genes are excluded by length
+        DispositionKind::Unresolved
+            if c.loci >= 10 && c.full_length >= 3 && !conserved_flanks && length >= 120 =>
+        {
             // a dispersed, multi-copy repeat that nothing else explains
             d.kind = DispositionKind::NovelCandidate;
             d.confidence = Confidence::Low;
@@ -456,6 +467,41 @@ pub fn apply_copy_evidence(mut d: Disposition, c: &CopyEvidence) -> Disposition 
         }
         _ => {}
     }
+    d
+}
+
+/// Keep a specific non-TE label from the original classifier (tRNA, rRNA,
+/// satellite, ...) unless TE proteins or domains contradict it.
+pub fn respect_original_label(
+    mut d: Disposition,
+    original: Option<&str>,
+    te_coding_evidence: bool,
+) -> Disposition {
+    let Some(original) = original.filter(|o| is_non_te(o)) else {
+        return d;
+    };
+    let non_te_kind = matches!(
+        d.kind,
+        DispositionKind::HostOrArtefact
+            | DispositionKind::Satellite
+            | DispositionKind::SimpleRepeat
+            | DispositionKind::LowComplexity
+    );
+    if non_te_kind || te_coding_evidence {
+        return d;
+    }
+    d.warnings.push(format!(
+        "kept_original_label:{original};conflicting:{}",
+        d.label
+    ));
+    d.kind = match top_level(original) {
+        "Satellite" => DispositionKind::Satellite,
+        "Simple_repeat" => DispositionKind::SimpleRepeat,
+        "Low_complexity" => DispositionKind::LowComplexity,
+        _ => DispositionKind::HostOrArtefact,
+    };
+    d.label = original.to_owned();
+    d.confidence = Confidence::Medium;
     d
 }
 
@@ -519,6 +565,7 @@ mod tests {
                 best_bitscore: bits,
                 best_subject: "s".into(),
                 best_identity: 50.0,
+                best_subject_coverage: 0.9,
                 query_coverage: cov,
                 n_hits: 1,
                 intervals: vec![(0, 100)],
@@ -863,6 +910,7 @@ mod tests {
                 Confidence::High,
             ),
             &copies(20, 8, Some((2, 0.8)), 0.3),
+            500,
         );
         assert!(d
             .evidence
@@ -872,6 +920,7 @@ mod tests {
         let d = apply_copy_evidence(
             disposition(DispositionKind::KnownTe, "DNA/hAT", Confidence::High),
             &copies(20, 8, Some((2, 0.8)), 0.3),
+            500,
         );
         assert_eq!(d.confidence, Confidence::Medium);
         assert!(d
@@ -889,6 +938,7 @@ mod tests {
                 Confidence::Medium,
             ),
             &copies(30, 10, Some((8, 0.7)), 0.3),
+            500,
         );
         assert!(d
             .evidence
@@ -902,6 +952,7 @@ mod tests {
                 Confidence::Medium,
             ),
             &copies(2, 1, None, 0.9),
+            500,
         );
         assert_eq!(d.confidence, Confidence::Low);
         assert!(d.warnings.iter().any(|w| w.starts_with("conserved_flanks")));
@@ -913,16 +964,66 @@ mod tests {
         let d = apply_copy_evidence(
             disposition(DispositionKind::Unresolved, "Unknown", Confidence::Low),
             &copies(40, 6, None, 0.3),
+            500,
         );
         assert_eq!(d.kind, DispositionKind::NovelCandidate);
         let d = apply_copy_evidence(
             disposition(DispositionKind::Unresolved, "Unknown", Confidence::Low),
             &copies(40, 6, None, 0.8),
+            500,
         );
         assert_eq!(
             d.kind,
             DispositionKind::Unresolved,
             "segmental-duplication-like flanks"
         );
+    }
+
+    #[test]
+    fn short_dispersed_families_are_not_promoted() {
+        let d = apply_copy_evidence(
+            disposition(DispositionKind::Unresolved, "Unknown", Confidence::Low),
+            &copies(40, 30, None, 0.3),
+            90,
+        );
+        assert_eq!(d.kind, DispositionKind::Unresolved);
+    }
+
+    #[test]
+    fn original_non_te_labels_are_kept_without_te_coding_evidence() {
+        let novel = disposition(DispositionKind::NovelCandidate, "Unknown", Confidence::Low);
+        let d = respect_original_label(novel.clone(), Some("tRNA"), false);
+        assert_eq!(
+            (d.kind, d.label.as_str()),
+            (DispositionKind::HostOrArtefact, "tRNA")
+        );
+        assert!(d.warnings[0].starts_with("kept_original_label:tRNA"));
+        assert_eq!(
+            respect_original_label(novel.clone(), Some("tRNA"), true).kind,
+            DispositionKind::NovelCandidate
+        );
+        assert_eq!(
+            respect_original_label(novel, Some("LTR/Gypsy"), false).kind,
+            DispositionKind::NovelCandidate
+        );
+    }
+
+    #[test]
+    fn short_family_matching_a_sliver_of_a_long_reference_is_low_confidence() {
+        let s = analyse(&random(132, 15), &StructureParams::default());
+        let mut nucl = support("LINE/L1", 124.0, 0.77);
+        nucl.classes[0].best_subject_coverage = 0.02;
+        let d = decide(
+            &HomologySummary::default(),
+            &nucl,
+            &DomainEvidence::default(),
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(d.confidence, Confidence::Low);
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("short_match_within_long_reference")));
     }
 }

@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     copies::{read_copy_evidence, CopyEvidence, CopyParams},
-    decide::{apply_copy_evidence, decide, DecisionThresholds, Disposition, DispositionKind},
+    decide::{
+        apply_copy_evidence, decide, is_non_te, respect_original_label, DecisionThresholds,
+        Disposition, DispositionKind,
+    },
     domains::{
         extract_te_models, hmmpress_command, hmmscan_command, interpret, parse_domtblout,
         DomainEvidence, DomainHit, TE_DOMAINS,
@@ -246,8 +249,13 @@ pub fn run_classify_with_runner(
             None => None,
         };
         if let Some(evidence) = &copies {
-            disposition = apply_copy_evidence(disposition, evidence);
+            disposition = apply_copy_evidence(disposition, evidence, family.seq.len());
         }
+        let te_coding_evidence = homology.classes.iter().any(|c| !is_non_te(&c.class))
+            || domains.inferred.is_some()
+            || domains.novel.is_some();
+        disposition =
+            respect_original_label(disposition, family.label.as_deref(), te_coding_evidence);
         let label_agreement = family
             .label
             .as_deref()

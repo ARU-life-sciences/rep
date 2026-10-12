@@ -200,6 +200,8 @@ pub struct ClassSupport {
     pub best_bitscore: f64,
     pub best_subject: String,
     pub best_identity: f64,
+    /// Fraction of the best subject covered by its hit.
+    pub best_subject_coverage: f64,
     /// Fraction of the consensus covered by hits to this class.
     pub query_coverage: f64,
     pub n_hits: usize,
@@ -262,6 +264,8 @@ pub fn summarise(hits: &[&ProteinHit], min_bitscore: f64) -> HomologySummary {
             best_bitscore: best.bitscore,
             best_subject: best.subject_id.clone(),
             best_identity: best.percent_identity,
+            best_subject_coverage: (best.subject_start.abs_diff(best.subject_end) + 1) as f64
+                / best.subject_length.max(1) as f64,
             query_coverage: covered as f64 / best.query_length.max(1) as f64,
             n_hits: class_hits.len(),
             intervals,
