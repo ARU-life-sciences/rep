@@ -579,7 +579,7 @@ fn write_outputs(
     let mut tsv = String::from(
         "family_id\toriginal_label\tlength\tdisposition\tlabel\tconfidence\tlabel_agreement\t\
          best_class\tbest_subject\tbest_bitscore\tclass_coverage\tchimeric_classes\t\
-         nucl_best_class\tnucl_best_subject\tnucl_bitscore\tnucl_coverage\tnucl_identity\t\
+         nucl_best_class\tnucl_best_subject\tnucl_bitscore\tnucl_coverage\tnucl_identity\tnucl_chimeric_classes\t\
          domain_architecture\tdomain_class\tdomain_novelty\t\
          copy_loci\tcopy_full_length\tcopy_identity\ttsd_length\ttsd_motif\ttsd_support\tflank_similarity\t\
          ltr_length\tltr_identity\ttir_length\ttir_identity\ttail\ttandem_period\t\
@@ -592,7 +592,7 @@ fn write_outputs(
         let opt = |v: Option<String>| v.unwrap_or_default();
         writeln!(
             tsv,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
             f.family_id,
             f.original_label.as_deref().unwrap_or(""),
             s.length,
@@ -610,6 +610,7 @@ fn write_outputs(
             opt(nbest.map(|b| format!("{:.1}", b.best_bitscore))),
             opt(nbest.map(|b| format!("{:.3}", b.query_coverage))),
             opt(nbest.map(|b| format!("{:.1}", b.best_identity))),
+            f.nucleotide_homology.chimeric_classes.join(","),
             f.domains.architecture,
             f.domains.inferred.as_deref().unwrap_or(""),
             f.domains.novel.as_deref().unwrap_or(""),

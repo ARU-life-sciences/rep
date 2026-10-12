@@ -267,6 +267,27 @@ pub fn decide(
                 "{source}_homology_to_multiple_classes:{}",
                 summary.chimeric_classes.join(",")
             ));
+            // SINEs (tRNA head + LINE tail) and Helitrons (captured fragments)
+            // are composite by nature: hits to several classes are expected, and
+            // the composite's own class is the right call
+            for composite in ["SINE", "RC"] {
+                if summary.chimeric_classes.iter().any(|c| c == composite) {
+                    if let Some(own) = summary
+                        .classes
+                        .iter()
+                        .find(|c| top_level(&c.class) == composite)
+                    {
+                        warnings.push(format!("composite_element:{}", own.class));
+                        return Disposition {
+                            kind: DispositionKind::KnownTe,
+                            label: own.class.clone(),
+                            confidence: Confidence::Low,
+                            evidence,
+                            warnings,
+                        };
+                    }
+                }
+            }
             return Disposition {
                 kind: DispositionKind::Chimeric,
                 label: best.class.clone(),
@@ -381,8 +402,6 @@ pub fn decide(
         Some(("DNA/Unknown", Confidence::Medium))
     } else if structure.tail.is_some() && coding {
         Some(("LINE/Unknown", Confidence::Low))
-    } else if structure.tail.is_some() && structure.length <= t.sine_max_length {
-        Some(("SINE/Unknown", Confidence::Low))
     } else if structure.helitron_termini {
         Some(("RC/Unknown", Confidence::Low))
     } else if coding {
@@ -660,6 +679,7 @@ mod tests {
             (d.kind, d.label.as_str()),
             (DispositionKind::NovelCandidate, "LTR/Unknown")
         );
+        // a short non-coding poly-A family may be a SINE or a truncated LINE 3' end
         let sine = [random(300, 6), b"A".repeat(20)].concat();
         let d = decide(
             &HomologySummary::default(),
@@ -668,7 +688,11 @@ mod tests {
             &analyse(&sine, &StructureParams::default()),
             &t,
         );
-        assert_eq!(d.label, "SINE/Unknown");
+        assert_eq!(
+            (d.kind, d.label.as_str()),
+            (DispositionKind::Unresolved, "Unknown")
+        );
+        assert!(d.evidence.contains(&"polyA_3prime".to_string()));
     }
 
     #[test]
@@ -1047,5 +1071,47 @@ mod tests {
             (DispositionKind::KnownTe, "LINE/RTE", Confidence::Low)
         );
         assert!(d.warnings.contains(&"weak_nucleotide_homology".to_string()));
+    }
+
+    #[test]
+    fn composite_sines_and_helitrons_take_their_own_class() {
+        let s = analyse(&random(600, 17), &StructureParams::default());
+        let mut nucl = support("LINE/L2", 300.0, 0.5);
+        nucl.classes.push(ClassSupport {
+            class: "SINE/tRNA".into(),
+            best_bitscore: 200.0,
+            best_subject: "x".into(),
+            best_identity: 80.0,
+            best_subject_coverage: 0.9,
+            query_coverage: 0.4,
+            n_hits: 1,
+            intervals: vec![(0, 200)],
+        });
+        nucl.chimeric_classes = vec!["LINE".into(), "SINE".into()];
+        let d = decide(
+            &HomologySummary::default(),
+            &nucl,
+            &DomainEvidence::default(),
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(
+            (d.kind, d.label.as_str(), d.confidence),
+            (DispositionKind::KnownTe, "SINE/tRNA", Confidence::Low)
+        );
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w == "composite_element:SINE/tRNA"));
+        nucl.classes[1].class = "DNA/hAT".into();
+        nucl.chimeric_classes = vec!["LINE".into(), "DNA".into()];
+        let d = decide(
+            &HomologySummary::default(),
+            &nucl,
+            &DomainEvidence::default(),
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(d.kind, DispositionKind::Chimeric);
     }
 }
