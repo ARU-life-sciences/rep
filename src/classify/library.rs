@@ -3,11 +3,14 @@
 //! Library identifiers have the form `name#Class/Superfamily`, for example
 //! `rnd-1_family-12#Unknown` or `ltr-1_family-3#LTR/Gypsy`.
 
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use bio::io::fasta;
 
-use crate::{Error, ErrorKind, Result};
+use crate::Result;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LibraryFamily {
@@ -40,27 +43,56 @@ pub fn split_label(id: &str) -> (String, Option<String>) {
     }
 }
 
+/// Read a library. Identifiers that occur more than once (seen in libraries
+/// concatenated from several runs) are made unique by suffixing the name with
+/// `_dup<n>`, keeping the label; identical duplicates are dropped.
 pub fn read_library(path: &Path) -> Result<Vec<LibraryFamily>> {
     let reader = fasta::Reader::from_file(path)?;
-    let mut seen = HashSet::new();
+    let mut seen: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+    let mut ids = HashSet::new();
+    let (mut renamed, mut dropped) = (0usize, 0usize);
     let mut families = Vec::new();
     for record in reader.records() {
         let record = record?;
-        let id = record.id().to_owned();
-        if !seen.insert(id.clone()) {
-            return Err(Error::new(ErrorKind::GenericCli(format!(
-                "duplicate library identifier {id} in {}",
-                path.display()
-            ))));
+        let original = record.id().to_owned();
+        let seq = record.seq().to_ascii_uppercase();
+        let copies = seen.entry(original.clone()).or_default();
+        if copies.contains(&seq) {
+            dropped += 1;
+            continue;
         }
+        copies.push(seq.clone());
+        let mut id = original.clone();
+        if copies.len() > 1 {
+            let (name, label) = split_label(&original);
+            let mut n = copies.len();
+            loop {
+                id = match &label {
+                    Some(l) => format!("{name}_dup{n}#{l}"),
+                    None => format!("{name}_dup{n}"),
+                };
+                if !ids.contains(&id) {
+                    break;
+                }
+                n += 1;
+            }
+            renamed += 1;
+        }
+        ids.insert(id.clone());
         let (name, label) = split_label(&id);
         families.push(LibraryFamily {
             id,
             name,
             label,
             description: record.desc().map(str::to_owned),
-            seq: record.seq().to_ascii_uppercase(),
+            seq,
         });
+    }
+    if renamed + dropped > 0 {
+        eprintln!(
+            "Warning: {}: {renamed} repeated identifiers renamed with _dup<n>, {dropped} identical duplicates dropped",
+            path.display()
+        );
     }
     Ok(families)
 }
@@ -105,9 +137,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_identifiers() {
+    fn renames_repeated_identifiers_and_drops_identical_duplicates() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, ">a#Unknown\nACGT\n>a#Unknown\nACGT").unwrap();
-        assert!(read_library(f.path()).is_err());
+        writeln!(
+            f,
+            ">a#LINE/L2\nACGT\n>a#LINE/L2\nACGT\n>a#LINE/L2\nTTTT\n>a#LINE/L2\nGGGG\n>b\nAC"
+        )
+        .unwrap();
+        let lib = read_library(f.path()).unwrap();
+        let ids = lib.iter().map(|f| f.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids, ["a#LINE/L2", "a_dup2#LINE/L2", "a_dup3#LINE/L2", "b"]);
+        assert_eq!(lib[1].label.as_deref(), Some("LINE/L2"));
+        assert_eq!(lib[1].name, "a_dup2");
     }
 }
