@@ -26,6 +26,7 @@ use super::{
     library::{read_library, LibraryFamily},
     rmout::{copy_evidence_from_rm, load_genome, read_rm_out},
     structure::{analyse, StructuralEvidence, StructureParams},
+    taxonomy::class_from_protein_name,
     taxonomy::top_level,
 };
 use crate::{command_runner::run_checked, CommandRunner, Error, ErrorKind, Result};
@@ -44,6 +45,8 @@ pub struct ClassifyConfig {
     pub index_dir: Option<PathBuf>,
     /// Full Pfam-A.hmm; TE domain models are extracted from it for ORF scans.
     pub pfam: Option<PathBuf>,
+    /// Pressed superfamily profile HMMs (`rep refdb hmms`), named `<model>#<label>`.
+    pub te_hmms: Option<PathBuf>,
     /// `rep recover-copies` output directory for copy-based evidence.
     pub copies_dir: Option<PathBuf>,
     /// RepeatMasker `.out` annotation of the genome with this library; used
@@ -73,6 +76,7 @@ impl ClassifyConfig {
             nucleotides: None,
             index_dir: None,
             pfam: None,
+            te_hmms: None,
             copies_dir: None,
             rm_out: None,
             genome: None,
@@ -95,6 +99,9 @@ impl ClassifyConfig {
         let mut config = Self::new(library, db.protein_library(), output_dir);
         config.nucleotides = Some(db.nucleotide_library());
         config.index_dir = Some(db.build_dir().join("index"));
+        if db.te_hmms().is_file() {
+            config.te_hmms = Some(db.te_hmms());
+        }
         config
     }
 
@@ -113,6 +120,7 @@ impl ClassifyConfig {
             self.proteins.as_ref().map(|p| ("proteins", p)),
             self.nucleotides.as_ref().map(|p| ("nucleotides", p)),
             self.pfam.as_ref().map(|p| ("pfam", p)),
+            self.te_hmms.as_ref().map(|p| ("te_hmms", p)),
             self.rm_out.as_ref().map(|p| ("rm_out", p)),
             self.genome.as_ref().map(|p| ("genome", p)),
         ];
@@ -206,7 +214,6 @@ pub fn run_classify_with_runner(
         }
         by_family
     };
-    let (hits_by_family, nucl_by_family) = (group(&hits), group(&nucl_hits));
 
     // ORFs of every selected family, then their TE protein domains
     let structures = selected
@@ -215,12 +222,25 @@ pub fn run_classify_with_runner(
         .collect::<Vec<_>>();
     let orfs_path = c.output_dir.join("orfs.faa");
     write_orfs(&orfs_path, &selected, &structures)?;
+    let lengths = selected
+        .iter()
+        .map(|f| (f.id.clone(), f.seq.len()))
+        .collect::<HashMap<_, _>>();
+    let has_orfs = structures.iter().any(|s| !s.orfs.is_empty());
+    // superfamily profile HMMs: hits count as protein-level homology
+    if let (Some(hmms), true) = (&c.te_hmms, has_orfs) {
+        hits.extend(scan_te_hmms(
+            c,
+            hmms,
+            &orfs_path,
+            &lengths,
+            runner,
+            &mut commands,
+        )?);
+    }
+    let (hits_by_family, nucl_by_family) = (group(&hits), group(&nucl_hits));
     let domain_hits = match &c.pfam {
-        Some(pfam) if structures.iter().any(|s| !s.orfs.is_empty()) => {
-            let lengths = selected
-                .iter()
-                .map(|f| (f.id.clone(), f.seq.len()))
-                .collect::<HashMap<_, _>>();
+        Some(pfam) if has_orfs => {
             scan_domains(c, pfam, &orfs_path, &lengths, runner, &mut commands)?
         }
         _ => Vec::new(),
@@ -551,6 +571,80 @@ fn write_orfs(
 
 /// Scan ORFs with the TE domain subset of Pfam, extracting and pressing the
 /// subset once per Pfam file.
+/// Scan ORFs with the superfamily profile HMMs and report each domain hit as
+/// a protein hit on the consensus (nucleotide coordinates, forward strand).
+fn scan_te_hmms(
+    c: &ClassifyConfig,
+    hmms: &Path,
+    orfs: &Path,
+    lengths: &HashMap<String, usize>,
+    runner: &dyn CommandRunner,
+    commands: &mut Vec<Vec<String>>,
+) -> Result<Vec<ProteinHit>> {
+    let out = c.output_dir.join("te_hmms.domtblout");
+    let mut scan = Command::new(crate::copy_recovery::executable("hmmscan"));
+    scan.args([
+        "-E",
+        "1e-5",
+        "--domE",
+        "1e-5",
+        "--noali",
+        "-o",
+        "/dev/null",
+        "--cpu",
+    ])
+    .arg(c.threads.to_string())
+    .arg("--domtblout")
+    .arg(&out)
+    .arg(hmms)
+    .arg(orfs);
+    commands.push(command_line(&scan));
+    run_checked(runner, &mut scan, "hmmscan (TE profiles)")?;
+    let mut hits = Vec::new();
+    for line in fs::read_to_string(&out).unwrap_or_default().lines() {
+        let f = line.split_whitespace().collect::<Vec<_>>();
+        if line.starts_with('#') || f.len() < 22 {
+            continue;
+        }
+        let mut parts = f[3].rsplitn(3, '|');
+        let (Some(coords), Some(_), Some(family)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let (strand, range) = coords.split_at(1);
+        let Some((start, end)) = range
+            .trim_start_matches(':')
+            .split_once('-')
+            .and_then(|(s, e)| Some((s.parse::<u64>().ok()?, e.parse::<u64>().ok()?)))
+        else {
+            continue;
+        };
+        let (from, to): (u64, u64) = (f[17].parse()?, f[18].parse()?);
+        // amino-acid positions on the ORF -> 1-based nucleotide positions
+        let (q_start, q_end) = if strand == "+" {
+            (start + 3 * (from - 1) + 1, start + 3 * to)
+        } else {
+            (end - 3 * to + 1, end - 3 * (from - 1))
+        };
+        hits.push(ProteinHit {
+            query_id: family.to_owned(),
+            subject_id: f[0].to_owned(),
+            class: class_from_protein_name(f[0]),
+            query_length: lengths.get(family).copied().unwrap_or(0) as u64,
+            subject_length: f[2].parse()?,
+            percent_identity: 0.0,
+            query_start: q_start,
+            query_end: q_end,
+            strand: strand.chars().next().unwrap_or('+'),
+            subject_start: f[15].parse()?,
+            subject_end: f[16].parse()?,
+            evalue: f[12].parse()?,
+            bitscore: f[13].parse()?,
+        });
+    }
+    Ok(hits)
+}
+
 fn scan_domains(
     c: &ClassifyConfig,
     pfam: &Path,

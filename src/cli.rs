@@ -430,6 +430,12 @@ fn classify_command() -> clap::Command {
                 .value_parser(value_parser!(PathBuf)),
         )
         .arg(
+            Arg::new("te-hmms")
+                .long("te-hmms")
+                .help("Pressed superfamily profile HMMs (default with --refdb: <db>/hmms/te_hmms.hmm)")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
             Arg::new("pfam")
                 .long("pfam")
                 .help("Full Pfam-A.hmm; TE domain models are extracted for ORF domain architecture")
@@ -472,6 +478,9 @@ where
     };
     config.all_families = m.get_flag("all");
     config.pfam = m.get_one::<PathBuf>("pfam").cloned();
+    if let Some(hmms) = m.get_one::<PathBuf>("te-hmms") {
+        config.te_hmms = Some(hmms.clone());
+    }
     config.copies_dir = m.get_one::<PathBuf>("copies").cloned();
     config.rm_out = m.get_one::<PathBuf>("rm-out").cloned();
     config.genome = m.get_one::<PathBuf>("genome").cloned();
@@ -589,6 +598,17 @@ fn refdb_command() -> clap::Command {
                 .arg(db()),
         )
         .subcommand(
+            Command::new("hmms")
+                .about("Build superfamily profile HMMs from the built protein library (hmms/te_hmms.hmm)")
+                .arg(db())
+                .arg(
+                    Arg::new("threads")
+                        .long("threads")
+                        .default_value("1")
+                        .value_parser(value_parser!(usize)),
+                ),
+        )
+        .subcommand(
             Command::new("status")
                 .about("Show sources, local layer and build")
                 .arg(db()),
@@ -658,6 +678,17 @@ pub fn run_refdb() -> Result<()> {
             eprintln!(
                 "Added {} local record(s), {} already present",
                 summary.added, summary.unchanged
+            );
+        }
+        "hmms" => {
+            let options = refdb::HmmBuildOptions {
+                threads: *sub.get_one::<usize>("threads").expect("defaulted"),
+                ..Default::default()
+            };
+            let info = refdb::build_te_hmms(&db, &options, &runner)?;
+            eprintln!(
+                "Built {} profile HMMs for {} labels from {} proteins ({} clusters, {} failed)",
+                info.models, info.labels, info.proteins, info.clusters, info.failed
             );
         }
         "build" => {

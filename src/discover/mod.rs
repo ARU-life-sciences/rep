@@ -105,6 +105,9 @@ pub struct DiscoverSummary {
     /// Protein clusters not used for linking because their labelled
     /// members span more than one top-level class.
     pub mixed_protein_clusters: usize,
+    /// Protein links refused because they would join components labelled
+    /// with different classes.
+    pub blocked_links: usize,
     pub commands: Vec<Vec<String>>,
 }
 
@@ -172,7 +175,19 @@ pub fn run_discover(c: &DiscoverConfig, runner: &dyn CommandRunner) -> Result<Di
         }
     }
     // groups: union family clusters that share a protein cluster
-    let mut uf = UnionFind::new(members.len());
+    // each component records the top-level classes of its labelled members
+    let mut class_bits: BTreeMap<&str, u32> = BTreeMap::new();
+    let masks = members
+        .iter()
+        .map(|m| match m.reference.as_deref().map(top_level) {
+            Some(class) => {
+                let next = class_bits.len() as u32;
+                1u32 << (*class_bits.entry(class).or_insert(next.min(31)))
+            }
+            None => 0,
+        })
+        .collect::<Vec<_>>();
+    let mut uf = UnionFind::new(masks);
     for (m, &f) in family_of.iter().enumerate() {
         uf.union(m, f);
     }
@@ -195,7 +210,11 @@ pub fn run_discover(c: &DiscoverConfig, runner: &dyn CommandRunner) -> Result<Di
             continue;
         }
         for &m in &ids[1..] {
-            uf.union(ids[0], m);
+            // cannot-link: never join components labelled with different classes,
+            // which chains of unlabelled protein clusters would otherwise do
+            if !uf.union_if_compatible(ids[0], m) {
+                summary.blocked_links += 1;
+            }
         }
     }
     let group_of = (0..members.len()).map(|m| uf.find(m)).collect::<Vec<_>>();
@@ -618,23 +637,43 @@ fn write_groups(
     ))
 }
 
-struct UnionFind(Vec<usize>);
+/// Union-find whose components carry a bit mask of labelled classes.
+struct UnionFind {
+    parent: Vec<usize>,
+    mask: Vec<u32>,
+}
 
 impl UnionFind {
-    fn new(n: usize) -> Self {
-        Self((0..n).collect())
+    fn new(mask: Vec<u32>) -> Self {
+        Self {
+            parent: (0..mask.len()).collect(),
+            mask,
+        }
     }
     fn find(&mut self, mut x: usize) -> usize {
-        while self.0[x] != x {
-            self.0[x] = self.0[self.0[x]];
-            x = self.0[x];
+        while self.parent[x] != x {
+            self.parent[x] = self.parent[self.parent[x]];
+            x = self.parent[x];
         }
         x
     }
     fn union(&mut self, a: usize, b: usize) {
         let (ra, rb) = (self.find(a), self.find(b));
         if ra != rb {
-            self.0[ra.max(rb)] = ra.min(rb);
+            let (root, child) = (ra.min(rb), ra.max(rb));
+            self.parent[child] = root;
+            self.mask[root] |= self.mask[child];
+        }
+    }
+    /// Join unless both components are labelled and their classes differ.
+    fn union_if_compatible(&mut self, a: usize, b: usize) -> bool {
+        let (ra, rb) = (self.find(a), self.find(b));
+        let (ma, mb) = (self.mask[ra], self.mask[rb]);
+        if ra == rb || ma == 0 || mb == 0 || ma == mb {
+            self.union(ra, rb);
+            true
+        } else {
+            false
         }
     }
 }
@@ -821,5 +860,37 @@ mod tests {
         .unwrap();
         assert_eq!((s.groups, s.mixed_protein_clusters), (3, 1));
         assert_eq!(s.propagated_from_group, 0);
+    }
+
+    #[test]
+    fn unlabelled_bridges_cannot_join_differently_labelled_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = dir.path().join("results");
+        sample(
+            &results,
+            "sp_a/GCA_1",
+            &[
+                ("f1#LINE/L2", "LINE/L2", "known_te", "LINE/L2", "high"),
+                ("f2#Unknown", "Unknown", "unresolved", "Unknown", "low"),
+                ("f3#LTR/Gypsy", "LTR/Gypsy", "known_te", "LTR/Gypsy", "high"),
+            ],
+        );
+        // two unlabelled-looking protein clusters chain LINE - Unknown - LTR
+        let runner = FakeMmseqs {
+            nucl: vec![(0, 0), (1, 1), (2, 2)],
+            prot: vec![
+                ("m0_o0".into(), "m0_o0".into()),
+                ("m0_o0".into(), "m1_o0".into()),
+                ("m2_o0".into(), "m2_o0".into()),
+                ("m2_o0".into(), "m1_o0".into()),
+            ],
+        };
+        let s = run_discover(
+            &DiscoverConfig::new(results, dir.path().join("out")),
+            &runner,
+        )
+        .unwrap();
+        // the Unknown joins the first component it meets; the LTR stays separate
+        assert_eq!((s.groups, s.blocked_links), (2, 1));
     }
 }

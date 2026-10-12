@@ -17,11 +17,13 @@
 
 mod embl;
 mod fetch;
+mod hmms;
 mod labels;
 
 pub use embl::{parse_embl, EmblEntry};
 pub use fetch::{fetch, register_source, FetchOptions};
 pub use fetch::{DFAM_CURRENT_URL, REPBASE_ARCHIVE_URL, REPBASE_MANIFEST_URL};
+pub use hmms::{build_te_hmms, build_te_hmms_from, HmmBuildInfo, HmmBuildOptions};
 pub use labels::repbase_label;
 
 use std::{
