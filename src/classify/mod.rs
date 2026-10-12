@@ -7,6 +7,7 @@
 //! explains are reported as `unresolved` together with the missing evidence.
 
 mod decide;
+mod domains;
 mod homology;
 mod library;
 mod pipeline;
@@ -14,6 +15,10 @@ mod structure;
 mod taxonomy;
 
 pub use decide::{decide, is_non_te, Confidence, DecisionThresholds, Disposition, DispositionKind};
+pub use domains::{
+    extract_te_models, hmmscan_command, interpret, parse_domtblout, role_of, DomainEvidence,
+    DomainHit, Role, TE_DOMAINS,
+};
 pub use homology::{
     blastn_library_command, blastx_command, diamond_blastx_command, diamond_makedb_command,
     makeblastdb_nucleotide_command, makeblastdb_protein_command, parse_protein_hits, summarise,

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     decide::{decide, DecisionThresholds, Disposition, DispositionKind},
+    domains::{
+        extract_te_models, hmmpress_command, hmmscan_command, interpret, parse_domtblout,
+        DomainEvidence, DomainHit, TE_DOMAINS,
+    },
     homology::{
         blastn_library_command, blastx_command, diamond_blastx_command, diamond_makedb_command,
         makeblastdb_nucleotide_command, makeblastdb_protein_command, parse_protein_hits, summarise,
@@ -33,6 +37,8 @@ pub struct ClassifyConfig {
     pub nucleotides: Option<PathBuf>,
     /// Where search indexes are cached; the output directory when `None`.
     pub index_dir: Option<PathBuf>,
+    /// Full Pfam-A.hmm; TE domain models are extracted from it for ORF scans.
+    pub pfam: Option<PathBuf>,
     pub output_dir: PathBuf,
     /// Classify every family, not only `Unknown`s (useful for validation).
     pub all_families: bool,
@@ -50,6 +56,7 @@ impl ClassifyConfig {
             proteins: Some(proteins),
             nucleotides: None,
             index_dir: None,
+            pfam: None,
             output_dir,
             all_families: false,
             threads: 1,
@@ -83,6 +90,7 @@ impl ClassifyConfig {
             Some(("library", &self.library)),
             self.proteins.as_ref().map(|p| ("proteins", p)),
             self.nucleotides.as_ref().map(|p| ("nucleotides", p)),
+            self.pfam.as_ref().map(|p| ("pfam", p)),
         ];
         for (label, path) in inputs.into_iter().flatten() {
             if !path.is_file() {
@@ -103,6 +111,7 @@ pub struct FamilyClassification {
     pub label_agreement: Option<String>,
     pub homology: HomologySummary,
     pub nucleotide_homology: HomologySummary,
+    pub domains: DomainEvidence,
     pub structure: StructuralEvidence,
 }
 
@@ -174,8 +183,33 @@ pub fn run_classify_with_runner(
     };
     let (hits_by_family, nucl_by_family) = (group(&hits), group(&nucl_hits));
 
+    // ORFs of every selected family, then their TE protein domains
+    let structures = selected
+        .iter()
+        .map(|f| analyse(&f.seq, &c.structure))
+        .collect::<Vec<_>>();
+    let orfs_path = c.output_dir.join("orfs.faa");
+    write_orfs(&orfs_path, &selected, &structures)?;
+    let domain_hits = match &c.pfam {
+        Some(pfam) if structures.iter().any(|s| !s.orfs.is_empty()) => {
+            let lengths = selected
+                .iter()
+                .map(|f| (f.id.clone(), f.seq.len()))
+                .collect::<HashMap<_, _>>();
+            scan_domains(c, pfam, &orfs_path, &lengths, runner, &mut commands)?
+        }
+        _ => Vec::new(),
+    };
+    let mut domains_by_family: BTreeMap<&str, Vec<&DomainHit>> = BTreeMap::new();
+    for hit in &domain_hits {
+        domains_by_family
+            .entry(&hit.family_id)
+            .or_default()
+            .push(hit);
+    }
+
     let mut families = Vec::new();
-    for family in &selected {
+    for (family, structure) in selected.iter().zip(structures) {
         let homology = summarise(
             &family_hits(&hits, &hits_by_family, &family.id),
             c.thresholds.min_bitscore,
@@ -184,8 +218,18 @@ pub fn run_classify_with_runner(
             &family_hits(&nucl_hits, &nucl_by_family, &family.id),
             c.thresholds.nucl_min_bitscore,
         );
-        let structure = analyse(&family.seq, &c.structure);
-        let disposition = decide(&homology, &nucleotide_homology, &structure, &c.thresholds);
+        let domains = interpret(
+            domains_by_family
+                .get(family.id.as_str())
+                .map_or(&[][..], Vec::as_slice),
+        );
+        let disposition = decide(
+            &homology,
+            &nucleotide_homology,
+            &domains,
+            &structure,
+            &c.thresholds,
+        );
         let label_agreement = family
             .label
             .as_deref()
@@ -205,6 +249,7 @@ pub fn run_classify_with_runner(
             label_agreement,
             homology,
             nucleotide_homology,
+            domains,
             structure,
         });
     }
@@ -329,6 +374,80 @@ fn library_stamp(path: &Path) -> Result<String> {
     ))
 }
 
+/// ORF proteins named `<family_id>|orf<n>|<strand>:<start>-<end>`, also used
+/// for downstream annotation (hmmscan, InterProScan, ...).
+fn write_orfs(
+    path: &Path,
+    families: &[&LibraryFamily],
+    structures: &[StructuralEvidence],
+) -> Result<()> {
+    let mut orfs = String::new();
+    for (f, s) in families.iter().zip(structures) {
+        for (i, orf) in s.orfs.iter().enumerate() {
+            writeln!(
+                orfs,
+                ">{}|orf{}|{}:{}-{}\n{}",
+                f.id,
+                i + 1,
+                orf.strand,
+                orf.start,
+                orf.end,
+                orf.protein
+            )
+            .expect("writing to a String cannot fail");
+        }
+    }
+    fs::write(path, orfs)?;
+    Ok(())
+}
+
+/// Scan ORFs with the TE domain subset of Pfam, extracting and pressing the
+/// subset once per Pfam file.
+fn scan_domains(
+    c: &ClassifyConfig,
+    pfam: &Path,
+    orfs: &Path,
+    lengths: &HashMap<String, usize>,
+    runner: &dyn CommandRunner,
+    commands: &mut Vec<Vec<String>>,
+) -> Result<Vec<DomainHit>> {
+    let exe = crate::copy_recovery::executable;
+    let index_dir = c.index_dir.clone().unwrap_or_else(|| c.output_dir.clone());
+    fs::create_dir_all(&index_dir)?;
+    let hmm = index_dir.join("te_domains.hmm");
+    let stamp_path = index_dir.join("te_domains.hmm.stamp");
+    let stamp = format!(
+        "{}{}",
+        library_stamp(pfam)?,
+        TE_DOMAINS
+            .iter()
+            .map(|(n, _)| *n)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    if fs::read_to_string(&stamp_path).ok().as_deref() != Some(stamp.as_str()) {
+        let missing = extract_te_models(pfam, &hmm)?;
+        if !missing.is_empty() {
+            eprintln!(
+                "TE domain models absent from this Pfam: {}",
+                missing.join(", ")
+            );
+        }
+        let mut press = hmmpress_command(exe("hmmpress"), &hmm);
+        commands.push(command_line(&press));
+        run_checked(runner, &mut press, "hmmpress")?;
+        fs::write(&stamp_path, &stamp)?;
+    }
+    let out = c.output_dir.join("domains.domtblout");
+    let mut scan = hmmscan_command(exe("hmmscan"), &hmm, orfs, &out, c.threads);
+    commands.push(command_line(&scan));
+    run_checked(runner, &mut scan, "hmmscan")?;
+    if !out.is_file() {
+        fs::write(&out, "")?;
+    }
+    parse_domtblout(&out, lengths)
+}
+
 fn command_line(cmd: &Command) -> Vec<String> {
     std::iter::once(cmd.get_program())
         .chain(cmd.get_args())
@@ -348,6 +467,7 @@ fn write_outputs(
         "family_id\toriginal_label\tlength\tdisposition\tlabel\tconfidence\tlabel_agreement\t\
          best_class\tbest_subject\tbest_bitscore\tclass_coverage\tchimeric_classes\t\
          nucl_best_class\tnucl_best_subject\tnucl_bitscore\tnucl_coverage\tnucl_identity\t\
+         domain_architecture\tdomain_class\tdomain_novelty\t\
          ltr_length\tltr_identity\ttir_length\ttir_identity\ttail\ttandem_period\t\
          tandem_identity\tlongest_orf_aa\tn_orfs\tgc\tevidence\twarnings\n",
     );
@@ -358,7 +478,7 @@ fn write_outputs(
         let opt = |v: Option<String>| v.unwrap_or_default();
         writeln!(
             tsv,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
             f.family_id,
             f.original_label.as_deref().unwrap_or(""),
             s.length,
@@ -376,6 +496,9 @@ fn write_outputs(
             opt(nbest.map(|b| format!("{:.1}", b.best_bitscore))),
             opt(nbest.map(|b| format!("{:.3}", b.query_coverage))),
             opt(nbest.map(|b| format!("{:.1}", b.best_identity))),
+            f.domains.architecture,
+            f.domains.inferred.as_deref().unwrap_or(""),
+            f.domains.novel.as_deref().unwrap_or(""),
             opt(s.ltr.as_ref().map(|r| r.length.to_string())),
             opt(s.ltr.as_ref().map(|r| format!("{:.3}", r.identity))),
             opt(s.tir.as_ref().map(|r| r.length.to_string())),
@@ -396,25 +519,6 @@ fn write_outputs(
         out.join("families.json"),
         serde_json::to_vec_pretty(families).map_err(|e| cli_error(e.to_string()))?,
     )?;
-
-    // ORF proteins for downstream domain annotation (hmmscan, InterProScan, ...)
-    let mut orfs = String::new();
-    for f in families {
-        for (i, orf) in f.structure.orfs.iter().enumerate() {
-            writeln!(
-                orfs,
-                ">{}|orf{}|{}:{}-{}\n{}",
-                f.family_id,
-                i + 1,
-                orf.strand,
-                orf.start,
-                orf.end,
-                orf.protein
-            )
-            .expect("writing to a String cannot fail");
-        }
-    }
-    fs::write(out.join("orfs.faa"), orfs)?;
 
     // Library with Unknowns relabelled; already-classified families are kept as they are.
     let relabel = families

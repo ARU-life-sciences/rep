@@ -162,6 +162,7 @@ mod tests {
             verbose: false,
             ltr_struct: false,
             refdb: None,
+            pfam: None,
         };
 
         set_up_filesystem(args.clone()).unwrap();
@@ -198,6 +199,7 @@ mod tests {
             verbose: false,
             ltr_struct: false,
             refdb: Some(tmp.path().join("db")),
+            pfam: None,
         };
         set_up_filesystem(args.clone()).unwrap();
         let err = run_repeatmasker(args.clone(), &MockRunner).unwrap_err();

@@ -30,6 +30,8 @@ pub struct CliArgs {
     pub ltr_struct: bool,
     // reference database used to classify families before masking
     pub refdb: Option<PathBuf>,
+    // Pfam-A.hmm for protein-domain architecture during classification
+    pub pfam: Option<PathBuf>,
 }
 
 impl CliArgs {
@@ -105,6 +107,11 @@ pub fn parse_args() -> Result<CliArgs> {
             arg!(--refdb <REFDB> "Built `rep refdb` database: classify families and mask with the reclassified library.")
                 .value_parser(value_parser!(PathBuf)),
         )
+        .arg(
+            arg!(--pfam <PFAM> "Pfam-A.hmm used for protein-domain architecture during classification (with --refdb).")
+                .requires("refdb")
+                .value_parser(value_parser!(PathBuf)),
+        )
         .arg(arg!(--verbose "Print extra debug information").action(ArgAction::SetTrue))
         .get_matches();
 
@@ -176,6 +183,7 @@ pub fn parse_args() -> Result<CliArgs> {
         verbose,
         ltr_struct,
         refdb,
+        pfam: matches.get_one::<PathBuf>("pfam").cloned(),
     })
 }
 
@@ -391,6 +399,12 @@ fn classify_command() -> clap::Command {
                 .value_parser(["blastx", "diamond"]),
         )
         .arg(
+            Arg::new("pfam")
+                .long("pfam")
+                .help("Full Pfam-A.hmm; TE domain models are extracted for ORF domain architecture")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
             Arg::new("min-orf-aa")
                 .long("min-orf-aa")
                 .default_value("100")
@@ -426,6 +440,7 @@ where
         c
     };
     config.all_families = m.get_flag("all");
+    config.pfam = m.get_one::<PathBuf>("pfam").cloned();
     config.threads = *m.get_one::<usize>("threads").expect("defaulted");
     config.evalue = *m.get_one::<f64>("evalue").expect("defaulted");
     config.backend = m

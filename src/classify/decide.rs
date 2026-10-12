@@ -7,6 +7,7 @@
 use serde::Serialize;
 
 use super::{
+    domains::DomainEvidence,
     homology::{ClassSupport, HomologySummary},
     structure::StructuralEvidence,
     taxonomy::top_level,
@@ -162,11 +163,18 @@ fn describe(source: &str, best: &ClassSupport) -> String {
 pub fn decide(
     homology: &HomologySummary,
     nucleotide: &HomologySummary,
+    domains: &DomainEvidence,
     structure: &StructuralEvidence,
     t: &DecisionThresholds,
 ) -> Disposition {
     let mut evidence = structural_notes(structure, t);
     let mut warnings = Vec::new();
+    if !domains.architecture.is_empty() {
+        evidence.push(format!("domains:{}", domains.architecture));
+    }
+    if let Some(reason) = &domains.novel {
+        warnings.push(format!("novel_domain_architecture:{reason}"));
+    }
     let protein_best = homology.classes.iter().find(|c| !is_non_te(&c.class));
     let nucl_best = nucleotide
         .best()
@@ -218,6 +226,14 @@ pub fn decide(
                 evidence.push(format!("nucleotide_agrees:{}", n.class));
             } else if n.query_coverage >= t.nucl_strong_coverage {
                 warnings.push(format!("nucleotide_class_conflict:{}", n.class));
+                confidence = confidence.lower();
+            }
+        }
+        if let Some(inferred) = &domains.inferred {
+            if top_level(inferred) == top_level(&best.class) {
+                evidence.push(format!("domains_agree:{inferred}"));
+            } else {
+                warnings.push(format!("domain_class_conflict:{inferred}"));
                 confidence = confidence.lower();
             }
         }
@@ -278,7 +294,39 @@ pub fn decide(
         warnings.push("homology_only_to_unclassified_te_proteins".into());
     }
 
-    // 2. Tandem repeats and low complexity
+    // 2. Protein-domain architecture without homology to known families
+    if let Some(reason) = &domains.novel {
+        return Disposition {
+            kind: DispositionKind::NovelCandidate,
+            label: "Unknown".into(),
+            confidence: Confidence::Medium,
+            evidence: {
+                evidence.insert(0, format!("novel_domain_architecture:{reason}"));
+                evidence
+            },
+            warnings,
+        };
+    }
+    if let Some(inferred) = &domains.inferred {
+        let mut confidence = Confidence::Medium;
+        match structure_consistent(inferred, structure) {
+            Some(true) => evidence.push(format!("structure_consistent_with:{inferred}")),
+            Some(false) => {
+                warnings.push(format!("expected_structure_missing_for:{inferred}"));
+                confidence = Confidence::Low;
+            }
+            None => {}
+        }
+        return Disposition {
+            kind: DispositionKind::KnownTe,
+            label: inferred.clone(),
+            confidence,
+            evidence,
+            warnings,
+        };
+    }
+
+    // 3. Tandem repeats and low complexity
     if let Some(tandem) = structure
         .tandem
         .as_ref()
@@ -311,7 +359,7 @@ pub fn decide(
         };
     }
 
-    // 3. TE hallmarks without homology: candidate novel elements
+    // 4. TE hallmarks without homology: candidate novel elements
     let coding = structure.longest_orf_aa() >= t.coding_orf_aa;
     let structural_label = if structure.ltr.is_some() {
         Some(("LTR/Unknown", Confidence::Medium))
@@ -339,7 +387,7 @@ pub fn decide(
         };
     }
 
-    // 4. Nothing explains the family
+    // 5. Nothing explains the family
     evidence.push(format!(
         "no_protein_homology;no_terminal_repeats;no_tail;longest_orf_aa={}",
         structure.longest_orf_aa()
@@ -390,6 +438,7 @@ fn structural_notes(s: &StructuralEvidence, t: &DecisionThresholds) -> Vec<Strin
 
 #[cfg(test)]
 mod tests {
+    use super::super::domains::{interpret, role_of, DomainHit};
     use super::super::structure::{analyse, StructureParams, TerminalRepeat};
     use super::*;
 
@@ -432,6 +481,7 @@ mod tests {
         let d = decide(
             &support("LTR/Gypsy", 400.0, 0.4),
             &HomologySummary::default(),
+            &DomainEvidence::default(),
             &s,
             &DecisionThresholds::default(),
         );
@@ -447,6 +497,7 @@ mod tests {
         let d = decide(
             &support("DNA/hAT", 400.0, 0.4),
             &HomologySummary::default(),
+            &DomainEvidence::default(),
             &s,
             &DecisionThresholds::default(),
         );
@@ -462,6 +513,7 @@ mod tests {
             decide(
                 &HomologySummary::default(),
                 &HomologySummary::default(),
+                &DomainEvidence::default(),
                 &sat,
                 &t
             )
@@ -473,6 +525,7 @@ mod tests {
             decide(
                 &HomologySummary::default(),
                 &HomologySummary::default(),
+                &DomainEvidence::default(),
                 &simple,
                 &t
             )
@@ -489,6 +542,7 @@ mod tests {
         let d = decide(
             &HomologySummary::default(),
             &HomologySummary::default(),
+            &DomainEvidence::default(),
             &analyse(&seq, &StructureParams::default()),
             &t,
         );
@@ -500,6 +554,7 @@ mod tests {
         let d = decide(
             &HomologySummary::default(),
             &HomologySummary::default(),
+            &DomainEvidence::default(),
             &analyse(&sine, &StructureParams::default()),
             &t,
         );
@@ -511,6 +566,7 @@ mod tests {
         let d = decide(
             &HomologySummary::default(),
             &HomologySummary::default(),
+            &DomainEvidence::default(),
             &analyse(&random(2000, 7), &StructureParams::default()),
             &DecisionThresholds::default(),
         );
@@ -527,6 +583,7 @@ mod tests {
         let d = decide(
             &HomologySummary::default(),
             &support("SINE/tRNA", 400.0, 0.9),
+            &DomainEvidence::default(),
             &s,
             &DecisionThresholds::default(),
         );
@@ -543,6 +600,7 @@ mod tests {
         let d = decide(
             &HomologySummary::default(),
             &support("rRNA", 900.0, 0.95),
+            &DomainEvidence::default(),
             &s,
             &DecisionThresholds::default(),
         );
@@ -554,6 +612,7 @@ mod tests {
         let d = decide(
             &HomologySummary::default(),
             &support("rRNA", 900.0, 0.1),
+            &DomainEvidence::default(),
             &s,
             &DecisionThresholds::default(),
         );
@@ -566,6 +625,7 @@ mod tests {
         let d = decide(
             &HomologySummary::default(),
             &support("LTR/Unknown", 900.0, 0.9),
+            &DomainEvidence::default(),
             &s,
             &DecisionThresholds::default(),
         );
@@ -591,6 +651,7 @@ mod tests {
         let d = decide(
             &support("LTR/Gypsy", 400.0, 0.4),
             &support("DNA/hAT", 500.0, 0.8),
+            &DomainEvidence::default(),
             &s,
             &DecisionThresholds::default(),
         );
@@ -602,5 +663,110 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.starts_with("nucleotide_class_conflict")));
+    }
+
+    fn domain_evidence(domains: &[(&str, usize)]) -> DomainEvidence {
+        let hits = domains
+            .iter()
+            .map(|(d, start)| DomainHit {
+                family_id: "f".into(),
+                domain: (*d).into(),
+                role: role_of(d).unwrap(),
+                orf: "f|orf1|+:0-9000".into(),
+                strand: '+',
+                score: 50.0,
+                i_evalue: 1e-20,
+                coding_start: *start,
+                coding_end: start + 300,
+            })
+            .collect::<Vec<_>>();
+        interpret(&hits.iter().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn domain_architecture_classifies_without_homology() {
+        let s = analyse(&random(5000, 12), &StructureParams::default());
+        let d = decide(
+            &HomologySummary::default(),
+            &HomologySummary::default(),
+            &domain_evidence(&[("RVT_1", 0), ("RNase_H", 700), ("rve", 1400)]),
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(
+            (d.kind, d.label.as_str()),
+            (DispositionKind::KnownTe, "LTR/Gypsy")
+        );
+        assert!(d.evidence.contains(&"domains:RT-RH-INT".to_string()));
+        // no LTRs in a random sequence
+        assert_eq!(d.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn novel_domain_architectures_are_candidates_even_with_partial_homology() {
+        let s = analyse(&random(5000, 13), &StructureParams::default());
+        let novel = domain_evidence(&[("RVT_1", 0), ("Dimer_Tnp_hAT", 1200)]);
+        let d = decide(
+            &HomologySummary::default(),
+            &HomologySummary::default(),
+            &novel,
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(
+            (d.kind, d.label.as_str()),
+            (DispositionKind::NovelCandidate, "Unknown")
+        );
+        assert!(d.evidence[0].starts_with("novel_domain_architecture:RT+DDE-transposase"));
+        // with homology the class stands, but the oddity is flagged
+        let d = decide(
+            &support("LINE/L1", 400.0, 0.4),
+            &HomologySummary::default(),
+            &novel,
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(d.kind, DispositionKind::KnownTe);
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("novel_domain_architecture")));
+    }
+
+    #[test]
+    fn domain_conflicts_lower_homology_confidence() {
+        let mut s = analyse(&random(5000, 14), &StructureParams::default());
+        s.ltr = Some(TerminalRepeat {
+            length: 300,
+            identity: 0.95,
+            five_prime_offset: 0,
+            three_prime_offset: 0,
+        });
+        let copia = domain_evidence(&[("rve", 0), ("RVT_2", 900)]);
+        let d = decide(
+            &support("LTR/Gypsy", 400.0, 0.4),
+            &HomologySummary::default(),
+            &copia,
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(
+            d.confidence,
+            Confidence::High,
+            "same top-level class: no conflict"
+        );
+        let dna = domain_evidence(&[("Dimer_Tnp_hAT", 0)]);
+        let d = decide(
+            &support("LTR/Gypsy", 400.0, 0.4),
+            &HomologySummary::default(),
+            &dna,
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(d.confidence, Confidence::Medium);
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w == "domain_class_conflict:DNA/hAT"));
     }
 }

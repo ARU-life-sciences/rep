@@ -19,7 +19,13 @@ pub(crate) fn run_checked(
     cmd: &mut Command,
     description: &str,
 ) -> Result<Output> {
-    let output = runner.run(cmd)?;
+    let output = runner.run(cmd).map_err(|e| match e.into_kind() {
+        ErrorKind::IO(io) => Error::new(ErrorKind::GenericCli(format!(
+            "{description}: could not run {}: {io}",
+            cmd.get_program().to_string_lossy()
+        ))),
+        other => Error::new(other),
+    })?;
     if !output.status.success() {
         return Err(Error::new(ErrorKind::GenericCli(format!(
             "{description} failed with status {}: {}",

@@ -490,6 +490,7 @@ mod tests {
             verbose: false,
             ltr_struct: false,
             refdb: None,
+            pfam: None,
         };
         let config = CurationConfig {
             flank: 2,

@@ -152,6 +152,7 @@ fn run_classification(matches: &CliArgs, db: &Path, runner: &dyn CommandRunner) 
         configure.join(CLASSIFY),
     );
     config.threads = usize::from(matches.rmo_threads);
+    config.pfam = matches.pfam.clone();
     let result = classify::run_classify_with_runner(&config, runner)?;
     eprintln!(
         "Classified {} families: {:?}",
@@ -327,6 +328,7 @@ mod tests {
             verbose: false,
             ltr_struct: false,
             refdb: None,
+            pfam: None,
         };
 
         set_up_filesystem(args).unwrap();

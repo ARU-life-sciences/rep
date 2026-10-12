@@ -105,6 +105,7 @@ mod tests {
             verbose: false,
             ltr_struct: false,
             refdb: None,
+            pfam: None,
         };
 
         let runner = MockRunner;
@@ -149,6 +150,7 @@ mod tests {
             verbose: false,
             ltr_struct: true,
             refdb: None,
+            pfam: None,
         };
         set_up_filesystem(args.clone()).unwrap();
         let runner = Recorder(Default::default());

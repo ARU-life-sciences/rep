@@ -96,14 +96,22 @@ be right first.
 - Boundary sharpness, meaning where the copy alignment loses coverage, which separates TEs from segmental duplications.
 - Feed `reputils curate` outputs (refined consensus, architecture hints) back in where they exist.
 
-### M3 – Protein-domain architecture
+### M3 – Protein-domain architecture (core done)
 
-- `hmmscan` of ORFs against Pfam (`/software/team301/pfam_hmm/Pfam-A.hmm`) and TE-specific HMMs.
-- TE hallmark domain table: RT (RVT_1/2/3), RNase H, integrase (rve), DDE transposases
-  (many families), tyrosine recombinase (YR), HUH/Rep and helicase (Helitron), PolB and ATPase
-  (Polinton/Maverick), Gag/zinc knuckle, endonuclease (APE, RLE, GIY-YIG).
-- Domain *order* as a classifier: GAG-PR-RT-RH-INT is Gypsy and GAG-PR-INT-RT-RH is Copia.
-- Host-gene flags such as zinc fingers or kinases with no TE domains, which point to `host_or_artefact`.
+- [x] Around 60 TE-role Pfam models are extracted from a full `Pfam-A.hmm`, pressed and cached;
+      `hmmscan --cut_ga` runs on the consensus ORFs (`rep classify --pfam`, pipeline `--pfam`).
+- [x] Domains are ordered along the coding strand. Rules cover Gypsy and Copia (integrase position),
+      Pao, DIRS, Penelope, LINE (APE+RT), Maverick, Helitron, Crypton and DNA superfamilies.
+- [x] Unprecedented combinations (RT+DDE, RT+PolB, RT+helicase, YR+DDE, YR+PolB, mixed
+      transposase superfamilies) give `novel_domain_architecture`. Without homology this becomes a
+      `novel_candidate`; with homology it is a warning.
+- [x] Benchmark on 712 intact Repbase consensi from 19 classes, using domains only and no homology:
+      top-level precision 100% (0 wrong class), recall 60%, 3 superfamily errors and no false novel flags.
+      Pao 37/40, Gypsy 39/40, Copia 32/40, MULE 32/40, PIF-Harbinger 34/40, LINEs ~80% to class level.
+- [ ] Poorly detected by Pfam: Crypton (0/30), Penelope (2/40), DIRS (8/40), Maverick (11/40), P (11/40).
+      Build our own superfamily-specific profile HMMs from the 78k labelled refdb proteins
+      (cluster → align → `hmmbuild`) and scan them alongside the Pfam subset.
+- [ ] Host-gene flags: scan ORFs that lack TE domains against full Pfam (kinases, zinc fingers, ...).
 
 ### M4 – Novelty discovery and negative filters
 
