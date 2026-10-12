@@ -23,8 +23,6 @@ Use `--curation_target <FASTA>` to search the RepeatModeler consensus against a 
 
 The Rust API also exposes `CurationConfig` and `run_curation_with_config` to customize flank length, maximum hit distance, orientation threshold, and hits per query.
 
-codex resume 019fc7db-f0d4-75a0-ba31-5ae6c5133d38
-
 ## Copy recovery
 
 `rep recover-copies --queries consensi.fa.classified --genome genome.fa --out copies/`
@@ -42,3 +40,39 @@ Manifests use the versioned `rep.copy-recovery.v1` contract and include stage fi
 The legacy `CurationConfig` API remains available for compatibility. Boundary inference,
 structural interpretation, and protein-domain analysis remain downstream responsibilities
 of `reputils`.
+
+## Classifying Unknown families
+
+`rep classify --library consensi.fa.classified --proteins RepBase_proteins.fa.gz --out classify/`
+gives every `Unknown` family an evidence-backed disposition: `known_te`, `chimeric`,
+`simple_repeat`, `satellite`, `low_complexity`, `novel_candidate` (TE hallmarks such as
+terminal direct/inverted repeats, poly-A tails or coding capacity without known homology)
+or `unresolved` (with the missing evidence recorded). Evidence comes from BLASTX (or
+`--backend diamond`) against TE proteins, whose names are mapped to RepeatMasker classes,
+and from built-in structural detectors. Use `--all` to also classify labelled families and
+report agreement with their existing labels.
+
+Outputs: `classification.tsv`, `families.json`, `summary.json`, `library.reclassified.fa`
+(Unknowns relabelled for RepeatMasker), `novel_candidates.fa`, `orfs.faa` and
+`unclassified_subjects.tsv` (protein hits whose names the taxonomy could not place).
+The `host_or_artefact` disposition marks families matching RNA genes or other non-TE references.
+Executables can be overridden with `REP_BLASTX`, `REP_MAKEBLASTDB` and `REP_DIAMOND`.
+
+## Reference database
+
+`rep refdb` maintains a merged, updateable TE reference built from Repbase (CC0 since June
+2026, mirrored by Dfam), Dfam curated families and peptides, and a local layer of our own families:
+
+```bash
+rep refdb fetch  --db te_refdb            # latest Repbase + Dfam; only new releases are downloaded
+rep refdb add    --db te_refdb --fasta custom_te.faa --kind protein --origin lab --status accepted
+rep refdb build  --db te_refdb            # build/te_nucl.fa, build/te_prot.fa, build/records.tsv
+rep classify --library consensi.fa.classified --refdb te_refdb --out classify/
+rep refdb add    --db te_refdb --from-classify classify/ --origin <genome> --status candidate
+```
+
+With `--refdb`, classification uses both protein (BLASTX) and nucleotide (BLASTN) homology.
+Search indexes are cached in `build/index/` until the next build. `rep refdb register`
+registers already-downloaded releases for offline use.
+
+See `ROADMAP.md` for the plan towards exhaustive Unknown resolution and novel-class discovery.

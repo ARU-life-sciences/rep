@@ -1,10 +1,12 @@
 // Public modules used across the CLI tool
+pub mod classify;
 pub mod cli; // Command-line argument parsing
 pub mod command_runner;
 pub mod copy_recovery;
 pub mod curation;
 pub mod error; // Error types and handling
 pub mod parse_blast; // BLAST outfmt 7 parser
+pub mod refdb; // layered TE reference database
 pub mod repeatmasker; // RepeatMasker wrapper
 pub mod repeatmodeler; // RepeatModeler wrapper
 

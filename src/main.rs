@@ -5,6 +5,15 @@ fn main() -> Result<()> {
         Some("recover-copies") => {
             rep::cli::parse_recover_copies_args().and_then(|c| rep::run_copy_recovery(&c).map(drop))
         }
+        Some("classify") => rep::cli::parse_classify_args()
+            .and_then(|c| rep::classify::run_classify(&c))
+            .map(|r| {
+                eprintln!(
+                    "Classified {} families: {:?}",
+                    r.summary.classified_families, r.summary.by_disposition
+                )
+            }),
+        Some("refdb") => rep::cli::run_refdb(),
         _ => pipeline(),
     };
     match result {

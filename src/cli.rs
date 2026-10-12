@@ -298,6 +298,307 @@ where
     Ok(config)
 }
 
+fn classify_command() -> clap::Command {
+    use clap::{Arg, Command};
+    Command::new("classify")
+        .about("Classify RepeatModeler Unknown families and flag candidate novel TEs.")
+        .arg(
+            Arg::new("library")
+                .long("library")
+                .required(true)
+                .help("RepeatModeler/RepeatMasker library, e.g. consensi.fa.classified")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("refdb")
+                .long("refdb")
+                .help("Built `rep refdb` database: uses its protein and nucleotide libraries")
+                .value_parser(value_parser!(PathBuf))
+                .conflicts_with_all(["proteins", "nucleotides"]),
+        )
+        .arg(
+            Arg::new("proteins")
+                .long("proteins")
+                .help("TE protein FASTA (optionally .gz), e.g. RepBase/RepeatPeps proteins")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("nucleotides")
+                .long("nucleotides")
+                .help("TE nucleotide library with `name#Class/Family` IDs (optionally .gz)")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .group(
+            clap::ArgGroup::new("reference")
+                .args(["refdb", "proteins", "nucleotides"])
+                .required(true)
+                .multiple(true),
+        )
+        .arg(
+            Arg::new("out")
+                .long("out")
+                .required(true)
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("all")
+                .long("all")
+                .help("Classify every family, not only Unknowns, and report label agreement")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("threads")
+                .long("threads")
+                .default_value("1")
+                .value_parser(value_parser!(usize)),
+        )
+        .arg(
+            Arg::new("evalue")
+                .long("evalue")
+                .default_value("1e-5")
+                .value_parser(value_parser!(f64)),
+        )
+        .arg(
+            Arg::new("backend")
+                .long("backend")
+                .default_value("blastx")
+                .value_parser(["blastx", "diamond"]),
+        )
+        .arg(
+            Arg::new("min-orf-aa")
+                .long("min-orf-aa")
+                .default_value("100")
+                .value_parser(value_parser!(usize)),
+        )
+}
+
+pub fn parse_classify_args() -> Result<crate::classify::ClassifyConfig> {
+    // argv[0] is the binary and argv[1] is the `classify` subcommand name
+    classify_from(std::env::args_os().skip(1))
+}
+
+fn classify_from<I, T>(args: I) -> Result<crate::classify::ClassifyConfig>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let m = classify_command()
+        .try_get_matches_from(args)
+        .unwrap_or_else(|e| e.exit());
+    let path = |n: &str| m.get_one::<PathBuf>(n).cloned().expect("required by clap");
+    let mut config = if let Some(db) = m.get_one::<PathBuf>("refdb") {
+        crate::classify::ClassifyConfig::from_refdb(
+            path("library"),
+            &crate::refdb::RefDb::new(db.clone()),
+            path("out"),
+        )
+    } else {
+        let mut c =
+            crate::classify::ClassifyConfig::new(path("library"), PathBuf::new(), path("out"));
+        c.proteins = m.get_one::<PathBuf>("proteins").cloned();
+        c.nucleotides = m.get_one::<PathBuf>("nucleotides").cloned();
+        c
+    };
+    config.all_families = m.get_flag("all");
+    config.threads = *m.get_one::<usize>("threads").expect("defaulted");
+    config.evalue = *m.get_one::<f64>("evalue").expect("defaulted");
+    config.backend = m
+        .get_one::<String>("backend")
+        .expect("defaulted")
+        .parse()
+        .map_err(|e: String| Error::new(ErrorKind::GenericCli(e)))?;
+    config.structure.min_orf_aa = *m.get_one::<usize>("min-orf-aa").expect("defaulted");
+    config
+        .validate()
+        .map_err(|e| Error::new(ErrorKind::GenericCli(e)))?;
+    Ok(config)
+}
+
+fn refdb_command() -> clap::Command {
+    use clap::{Arg, Command};
+    let db = || {
+        Arg::new("db")
+            .long("db")
+            .required(true)
+            .help("Reference database directory")
+            .value_parser(value_parser!(PathBuf))
+    };
+    Command::new("refdb")
+        .about("Manage the merged Repbase + Dfam + local TE reference database.")
+        .subcommand_required(true)
+        .subcommand(
+            Command::new("fetch")
+                .about("Download and register the latest (or a given) public releases")
+                .arg(db())
+                .arg(
+                    Arg::new("repbase-release")
+                        .long("repbase-release")
+                        .help("e.g. RepBase31.09"),
+                )
+                .arg(
+                    Arg::new("no-repbase")
+                        .long("no-repbase")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("no-dfam")
+                        .long("no-dfam")
+                        .action(ArgAction::SetTrue),
+                ),
+        )
+        .subcommand(
+            Command::new("register")
+                .about("Register an already-downloaded source release (offline use)")
+                .arg(db())
+                .arg(
+                    Arg::new("source")
+                        .long("source")
+                        .required(true)
+                        .value_parser(["repbase", "dfam-curated", "dfam-peptides"]),
+                )
+                .arg(Arg::new("version").long("version").required(true))
+                .arg(
+                    Arg::new("file")
+                        .long("file")
+                        .required(true)
+                        .value_parser(value_parser!(PathBuf)),
+                ),
+        )
+        .subcommand(
+            Command::new("add")
+                .about("Add our own families to the local layer")
+                .arg(db())
+                .arg(
+                    Arg::new("fasta")
+                        .long("fasta")
+                        .value_parser(value_parser!(PathBuf)),
+                )
+                .arg(
+                    Arg::new("from-classify")
+                        .long("from-classify")
+                        .help("A `rep classify` output directory")
+                        .value_parser(value_parser!(PathBuf))
+                        .conflicts_with("fasta"),
+                )
+                .arg(
+                    Arg::new("dispositions")
+                        .long("dispositions")
+                        .default_value("novel_candidate")
+                        .help("Comma-separated dispositions taken from --from-classify"),
+                )
+                .arg(
+                    Arg::new("kind")
+                        .long("kind")
+                        .default_value("nucleotide")
+                        .value_parser(["nucleotide", "protein"]),
+                )
+                .arg(
+                    Arg::new("origin")
+                        .long("origin")
+                        .required(true)
+                        .help("Genome or project tag, prefixed to IDs (e.g. Ec32)"),
+                )
+                .arg(
+                    Arg::new("status")
+                        .long("status")
+                        .default_value("candidate")
+                        .value_parser(["accepted", "candidate", "rejected"]),
+                )
+                .arg(Arg::new("notes").long("notes").default_value("")),
+        )
+        .subcommand(
+            Command::new("build")
+                .about("Merge sources into build/")
+                .arg(db()),
+        )
+        .subcommand(
+            Command::new("status")
+                .about("Show sources, local layer and build")
+                .arg(db()),
+        )
+}
+
+/// Parse and run `rep refdb ...`.
+pub fn run_refdb() -> Result<()> {
+    use crate::refdb;
+    let m = refdb_command()
+        .try_get_matches_from(std::env::args_os().skip(1))
+        .unwrap_or_else(|e| e.exit());
+    let (name, sub) = m.subcommand().expect("subcommand_required");
+    let db = refdb::RefDb::new(sub.get_one::<PathBuf>("db").expect("required").clone());
+    let runner = crate::RealCommandRunner;
+    let text = |n: &str| sub.get_one::<String>(n).cloned().unwrap_or_default();
+    match name {
+        "fetch" => {
+            let options = refdb::FetchOptions {
+                repbase: !sub.get_flag("no-repbase"),
+                repbase_release: sub.get_one::<String>("repbase-release").cloned(),
+                dfam: !sub.get_flag("no-dfam"),
+            };
+            let added = refdb::fetch(&db, &options, &runner)?;
+            eprintln!(
+                "Registered {} new release(s); run `rep refdb build` to merge",
+                added.len()
+            );
+        }
+        "register" => {
+            let file = sub.get_one::<PathBuf>("file").expect("required");
+            let release = refdb::register_source(
+                &db,
+                &text("source"),
+                &text("version"),
+                file,
+                None,
+                &runner,
+            )?;
+            eprintln!("Registered {} {}", release.name, release.version);
+        }
+        "add" => {
+            let status = text("status");
+            let records = if let Some(dir) = sub.get_one::<PathBuf>("from-classify") {
+                let dispositions = text("dispositions")
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                refdb::local_records_from_classify(dir, &dispositions, &text("origin"), &status)?
+            } else if let Some(fasta) = sub.get_one::<PathBuf>("fasta") {
+                let kind = text("kind")
+                    .parse()
+                    .map_err(|e: String| Error::new(ErrorKind::GenericCli(e)))?;
+                refdb::local_records_from_fasta(
+                    fasta,
+                    kind,
+                    &text("origin"),
+                    &status,
+                    &text("notes"),
+                )?
+            } else {
+                return Err(Error::new(ErrorKind::GenericCli(
+                    "refdb add needs --fasta or --from-classify".into(),
+                )));
+            };
+            let summary = db.add_local(records)?;
+            eprintln!(
+                "Added {} local record(s), {} already present",
+                summary.added, summary.unchanged
+            );
+        }
+        "build" => {
+            let info = refdb::build(&db)?;
+            eprintln!(
+                "Built {} nucleotide and {} protein records ({} duplicates, {} renamed, {} unlabelled)",
+                info.nucleotide_records,
+                info.protein_records,
+                info.duplicates,
+                info.renamed,
+                info.unlabelled
+            );
+        }
+        _ => print!("{}", refdb::status_report(&db)?),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +643,31 @@ mod tests {
         ])
         .unwrap_err();
         assert!(err.to_string().contains("not a regular file"));
+    }
+
+    #[test]
+    fn classify_parses_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let fa = dir.path().join("x.fa");
+        std::fs::write(&fa, ">a\nACGT\n").unwrap();
+        let fa = fa.to_str().unwrap();
+        let c = classify_from([
+            "classify",
+            "--library",
+            fa,
+            "--proteins",
+            fa,
+            "--out",
+            "o",
+            "--all",
+            "--backend",
+            "diamond",
+            "--min-orf-aa",
+            "80",
+        ])
+        .unwrap();
+        assert!(c.all_families);
+        assert_eq!(c.backend, crate::classify::HomologyBackend::Diamond);
+        assert_eq!(c.structure.min_orf_aa, 80);
     }
 }

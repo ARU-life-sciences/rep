@@ -21,4 +21,5 @@ pub use manifest::{FamilyManifest, Manifest, StageState, SCHEMA_VERSION};
 pub use pipeline::{
     run_copy_recovery, run_copy_recovery_with_runner, CopyRecoveryResult, FamilyRecoveryResult,
 };
+pub(crate) use search::executable;
 pub use search::{blastn_command, makeblastdb_command};
