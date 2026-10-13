@@ -87,6 +87,7 @@ pub struct SourceRelease {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct BuildInfo {
     pub built_at: u64,
     pub sources: Vec<String>,
@@ -741,6 +742,30 @@ pub fn status_report(db: &RefDb) -> Result<String> {
             b.nucleotide_records, b.protein_records, b.duplicates, b.renamed, b.unlabelled, b.sources
         ),
         None => writeln!(text, "  not built yet (run `rep refdb build`)"),
+    }
+    .ok();
+    let hmms = fs::read(db.hmm_dir().join("te_hmms.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<HmmBuildInfo>(&b).ok());
+    match (hmms, &manifest.last_build) {
+        (Some(h), build) => {
+            let stale = build
+                .as_ref()
+                .is_some_and(|b| b.fingerprint != h.source_fingerprint);
+            writeln!(
+                text,
+                "  profile HMMs   {} models for {} labels from {} proteins{}",
+                h.models,
+                h.labels,
+                h.proteins,
+                if stale {
+                    " (stale: rerun `rep refdb hmms`)"
+                } else {
+                    ""
+                }
+            )
+        }
+        (None, _) => writeln!(text, "  profile HMMs   none (run `rep refdb hmms`)"),
     }
     .ok();
     Ok(text)

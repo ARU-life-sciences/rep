@@ -18,7 +18,7 @@ use std::{
 use bio::io::fasta;
 use serde::{Deserialize, Serialize};
 
-use super::{cli_error, RefDb};
+use super::{cli_error, BuildInfo, RefDb};
 use crate::{
     classify::{is_non_te, split_label},
     command_runner::run_checked,
@@ -116,8 +116,15 @@ pub fn build_te_hmms_from(
     }
     let input = work.join("proteins.fa");
     fs::write(&input, fa)?;
+    // a refdb protein library has its build record beside it
+    let source_fingerprint = fs::read(proteins.with_file_name("build.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<BuildInfo>(&b).ok())
+        .map(|b| b.fingerprint)
+        .unwrap_or_default();
     let mut info = HmmBuildInfo {
         proteins: labels.len(),
+        source_fingerprint,
         ..Default::default()
     };
 
@@ -327,5 +334,9 @@ mod tests {
             .unwrap()
             .contains("hmm_0#LTR/Gypsy\tLTR/Gypsy\t6"));
         assert!(!out.join("work").exists());
+        assert_eq!(info.source_fingerprint, "");
+        fs::write(dir.path().join("build.json"), r#"{"fingerprint":"abc"}"#).unwrap();
+        let info = build_te_hmms_from(&prot, &out, &HmmBuildOptions::default(), &Fake).unwrap();
+        assert_eq!(info.source_fingerprint, "abc");
     }
 }

@@ -39,4 +39,4 @@ pub use rmout::{copy_evidence_from_rm, load_genome, read_rm_out, RmHit};
 pub use structure::{
     analyse, orfs, Orf, StructuralEvidence, StructureParams, Tail, Tandem, TerminalRepeat,
 };
-pub use taxonomy::{class_from_protein_name, top_level};
+pub use taxonomy::{canonical_class, class_from_protein_name, top_level};

@@ -50,12 +50,12 @@ const RULES: &[(&str, Match, &str)] = &[
     ("VIPER", Contains, "LTR/DIRS"),
     ("PAT", Prefix, "LTR/DIRS"),
     // --- Penelope-like ---
-    ("PENELOPE", Contains, "LINE/Penelope"),
-    ("POSEIDON", Prefix, "LINE/Penelope"),
-    ("NEPTUNE", Prefix, "LINE/Penelope"),
-    ("ATHENA", Prefix, "LINE/Penelope"),
-    ("NAIAD", Prefix, "LINE/Penelope"),
-    ("CHLAMYS", Prefix, "LINE/Penelope"),
+    ("PENELOPE", Contains, "PLE/Penelope"),
+    ("POSEIDON", Prefix, "PLE/Penelope"),
+    ("NEPTUNE", Prefix, "PLE/Penelope"),
+    ("ATHENA", Prefix, "PLE/Penelope"),
+    ("NAIAD", Prefix, "PLE/Penelope"),
+    ("CHLAMYS", Prefix, "PLE/Penelope"),
     // --- non-LTR (LINE) retrotransposons ---
     ("ATLINE", Prefix, "LINE"),
     ("LINE1", Prefix, "LINE/L1"),
@@ -184,6 +184,16 @@ pub fn top_level(label: &str) -> &str {
     label.split('/').next().unwrap_or(label)
 }
 
+/// [`top_level`] with legacy class names mapped to current ones:
+/// RepeatMasker formerly filed Penelope-like elements under `LINE`.
+pub fn canonical_class(label: &str) -> &str {
+    if label.starts_with("LINE/Penelope") {
+        "PLE"
+    } else {
+        top_level(label)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +242,16 @@ mod tests {
         // `I` must not match `Itch`, and `L1` must not match `L1x`-like words
         assert_eq!(class_from_protein_name("Itch-1_xx"), None);
         assert_eq!(class_from_protein_name("Utopia-3_xx"), None);
+    }
+
+    #[test]
+    fn legacy_penelope_is_ple() {
+        assert_eq!(canonical_class("LINE/Penelope"), "PLE");
+        assert_eq!(canonical_class("LINE/L2"), "LINE");
+        assert_eq!(
+            class_from_protein_name("Penelope-1_DV_1p").as_deref(),
+            Some("PLE/Penelope")
+        );
     }
 
     #[test]

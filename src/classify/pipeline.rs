@@ -1,7 +1,8 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Write as _,
     fs,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -26,8 +27,8 @@ use super::{
     library::{read_library, LibraryFamily},
     rmout::{copy_evidence_from_rm, load_genome, read_rm_out},
     structure::{analyse, StructuralEvidence, StructureParams},
+    taxonomy::canonical_class,
     taxonomy::class_from_protein_name,
-    taxonomy::top_level,
 };
 use crate::{command_runner::run_checked, CommandRunner, Error, ErrorKind, Result};
 
@@ -227,16 +228,26 @@ pub fn run_classify_with_runner(
         .map(|f| (f.id.clone(), f.seq.len()))
         .collect::<HashMap<_, _>>();
     let has_orfs = structures.iter().any(|s| !s.orfs.is_empty());
-    // superfamily profile HMMs: hits count as protein-level homology
-    if let (Some(hmms), true) = (&c.te_hmms, has_orfs) {
-        hits.extend(scan_te_hmms(
-            c,
-            hmms,
-            &orfs_path,
-            &lengths,
-            runner,
-            &mut commands,
-        )?);
+    // superfamily profile HMMs: hits count as protein-level homology. They are
+    // slow, and add nothing where BLASTX already found a strong hit.
+    let explained = hits
+        .iter()
+        .filter(|h| h.bitscore >= STRONG_PROTEIN_BITS)
+        .map(|h| h.query_id.as_str())
+        .collect::<HashSet<_>>();
+    let unexplained = selected
+        .iter()
+        .zip(&structures)
+        .filter(|(f, s)| !s.orfs.is_empty() && !explained.contains(f.id.as_str()))
+        .map(|(f, s)| (*f, s.clone()))
+        .collect::<Vec<_>>();
+    if let (Some(hmms), false) = (&c.te_hmms, unexplained.is_empty()) {
+        let (families, structures): (Vec<_>, Vec<_>) = unexplained.into_iter().unzip();
+        let profile_orfs = c.output_dir.join("te_hmms_orfs.faa");
+        write_orfs(&profile_orfs, &families, &structures)?;
+        let profile_hits = scan_te_hmms(c, hmms, &profile_orfs, &lengths, runner, &mut commands)?;
+        fs::remove_file(&profile_orfs).ok();
+        hits.extend(profile_hits);
     }
     let (hits_by_family, nucl_by_family) = (group(&hits), group(&nucl_hits));
     let domain_hits = match &c.pfam {
@@ -318,7 +329,7 @@ pub fn run_classify_with_runner(
             .as_deref()
             .filter(|_| !family.is_unknown())
             .map(|original| {
-                if top_level(original) == top_level(&disposition.label) {
+                if canonical_class(original) == canonical_class(&disposition.label) {
                     "agree".to_owned()
                 } else {
                     "disagree".to_owned()
@@ -544,6 +555,10 @@ fn library_stamp(path: &Path) -> Result<String> {
 
 /// ORF proteins named `<family_id>|orf<n>|<strand>:<start>-<end>`, also used
 /// for downstream annotation (hmmscan, InterProScan, ...).
+/// BLASTX bit score above which a family counts as explained by protein
+/// homology (≥98% agreement with RepeatClassifier in the v3 calibration).
+const STRONG_PROTEIN_BITS: f64 = 200.0;
+
 fn write_orfs(
     path: &Path,
     families: &[&LibraryFamily],
@@ -569,8 +584,6 @@ fn write_orfs(
     Ok(())
 }
 
-/// Scan ORFs with the TE domain subset of Pfam, extracting and pressing the
-/// subset once per Pfam file.
 /// Scan ORFs with the superfamily profile HMMs and report each domain hit as
 /// a protein hit on the consensus (nucleotide coordinates, forward strand).
 fn scan_te_hmms(
@@ -582,12 +595,20 @@ fn scan_te_hmms(
     commands: &mut Vec<Vec<String>>,
 ) -> Result<Vec<ProteinHit>> {
     let out = c.output_dir.join("te_hmms.domtblout");
-    let mut scan = Command::new(crate::copy_recovery::executable("hmmscan"));
+    // hmmsearch reads each (large) model once; hmmscan would re-read the whole
+    // pressed database for every ORF. E-values are scaled to the number of
+    // models, as hmmscan would, so they do not depend on the library size.
+    let models = count_models(hmms)?.max(1).to_string();
+    let mut scan = Command::new(crate::copy_recovery::executable("hmmsearch"));
     scan.args([
         "-E",
         "1e-5",
         "--domE",
         "1e-5",
+        "-Z",
+        &models,
+        "--domZ",
+        &models,
         "--noali",
         "-o",
         "/dev/null",
@@ -599,14 +620,16 @@ fn scan_te_hmms(
     .arg(hmms)
     .arg(orfs);
     commands.push(command_line(&scan));
-    run_checked(runner, &mut scan, "hmmscan (TE profiles)")?;
+    run_checked(runner, &mut scan, "hmmsearch (TE profiles)")?;
     let mut hits = Vec::new();
     for line in fs::read_to_string(&out).unwrap_or_default().lines() {
         let f = line.split_whitespace().collect::<Vec<_>>();
         if line.starts_with('#') || f.len() < 22 {
             continue;
         }
-        let mut parts = f[3].rsplitn(3, '|');
+        // hmmsearch: target (ORF) first, then query (model)
+        let (orf, model, model_length) = (f[0], f[3], f[5]);
+        let mut parts = orf.rsplitn(3, '|');
         let (Some(coords), Some(_), Some(family)) = (parts.next(), parts.next(), parts.next())
         else {
             continue;
@@ -628,10 +651,10 @@ fn scan_te_hmms(
         };
         hits.push(ProteinHit {
             query_id: family.to_owned(),
-            subject_id: f[0].to_owned(),
-            class: class_from_protein_name(f[0]),
+            subject_id: model.to_owned(),
+            class: class_from_protein_name(model),
             query_length: lengths.get(family).copied().unwrap_or(0) as u64,
-            subject_length: f[2].parse()?,
+            subject_length: model_length.parse()?,
             percent_identity: 0.0,
             query_start: q_start,
             query_end: q_end,
@@ -645,6 +668,22 @@ fn scan_te_hmms(
     Ok(hits)
 }
 
+/// Number of models in an HMM file: the `te_hmms.tsv` table written beside
+/// it by `rep refdb hmms`, else the `NAME` lines of the file itself.
+fn count_models(hmms: &Path) -> Result<usize> {
+    let table = hmms.with_extension("tsv");
+    if let Ok(text) = fs::read_to_string(&table) {
+        return Ok(text.lines().skip(1).filter(|l| !l.is_empty()).count());
+    }
+    let mut n = 0;
+    for line in BufReader::new(fs::File::open(hmms)?).lines() {
+        n += usize::from(line?.starts_with("NAME "));
+    }
+    Ok(n)
+}
+
+/// Scan ORFs with the TE domain subset of Pfam, extracting and pressing the
+/// subset once per Pfam file.
 fn scan_domains(
     c: &ClassifyConfig,
     pfam: &Path,
@@ -1058,5 +1097,69 @@ mod tests {
         // the index is reused while the library is unchanged
         let again = run_classify_with_runner(&config, &runner).unwrap();
         assert_eq!(builds(&again), 0);
+    }
+
+    /// Fakes hmmsearch: one hit of a labelled profile on a forward ORF.
+    struct HmmsearchRunner;
+
+    impl CommandRunner for HmmsearchRunner {
+        fn run(&self, cmd: &mut Command) -> Result<Output> {
+            let args = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let z = args.iter().position(|a| a == "-Z").unwrap();
+            assert_eq!(args[z + 1], "3");
+            let out = args.iter().position(|a| a == "--domtblout").unwrap();
+            fs::write(
+                &args[out + 1],
+                "# target query\n\
+                 fam#Unknown|orf1|+:100-1000 - 300 hmm_7#DNA/Crypton - 450 1e-30 100.0 0.1 1 1 \
+                 1e-30 1e-30 99.0 0.1 5 205 11 210 11 210 0.9 -\n",
+            )?;
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn te_profile_hits_map_to_family_coordinates() {
+        let dir = tempfile::tempdir().unwrap();
+        let hmms = dir.path().join("te_hmms.hmm");
+        fs::write(&hmms, "").unwrap();
+        fs::write(
+            dir.path().join("te_hmms.tsv"),
+            "model\tlabel\tmembers\na\tx\t5\nb\tx\t5\nc\tx\t5\n",
+        )
+        .unwrap();
+        let config = ClassifyConfig::new(PathBuf::new(), PathBuf::new(), dir.path().into());
+        let lengths = HashMap::from([("fam#Unknown".to_owned(), 1200)]);
+        let mut commands = Vec::new();
+        let hits = scan_te_hmms(
+            &config,
+            &hmms,
+            Path::new("orfs.faa"),
+            &lengths,
+            &HmmsearchRunner,
+            &mut commands,
+        )
+        .unwrap();
+        assert!(commands[0][0].ends_with("hmmsearch"));
+        assert_eq!(hits.len(), 1);
+        let h = &hits[0];
+        assert_eq!(h.query_id, "fam#Unknown");
+        assert_eq!(h.class.as_deref(), Some("DNA/Crypton"));
+        assert_eq!(
+            (h.query_start, h.query_end, h.query_length),
+            (131, 730, 1200)
+        );
+        assert_eq!(
+            (h.subject_start, h.subject_end, h.subject_length),
+            (5, 205, 450)
+        );
+        assert_eq!(h.bitscore, 99.0);
     }
 }
