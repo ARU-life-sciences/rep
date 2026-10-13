@@ -20,6 +20,66 @@ A disposition is one of:
 | `host_or_artefact` | Matches an RNA gene or other non-TE reference, or keeps such a label from RepeatClassifier |
 | `unresolved` | No evidence either way; the missing evidence is recorded |
 
+## Pipeline at a glance
+
+```text
+per genome                                                    across genomes
+──────────                                                    ──────────────
+genome.fa
+  │ 1. RepeatModeler            consensus library (RepeatClassifier labels, mostly Unknown)
+  │ 2. copy recovery            all genomic copies of each consensus, with flanks
+  │    (or an existing RepeatMasker .out + genome: same evidence, much faster)
+  │ 3. rep classify             evidence per family → disposition → relabelled library
+  │ 4. RepeatMasker             genome annotated with the relabelled library
+  ▼                                                           5. rep discover
+classification.tsv, masked genome  ─────────────────────────▶  cluster families of many species,
+                                                               propagate labels, rank novel groups
+                                                               │
+             rep refdb (Repbase + Dfam + our own families) ◀──┘ accepted novel families
+             build → profile HMMs → mosaics                     (refdb add --from-classify)
+```
+
+Evidence gathered in step 3, per family:
+
+| Evidence | Source | Tells us |
+| --- | --- | --- |
+| Protein homology | BLASTX vs 78k refdb proteins | class of coding families |
+| Nucleotide homology | BLASTN vs 146k refdb consensi, mosaic-aware | class of non-coding/diverged families |
+| Domain architecture | Pfam TE subset + 1,712 superfamily profile HMMs | class from domain order (e.g. GAG-PR-RT-RH-INT) |
+| Host genes | full Pfam on ORFs lacking TE evidence (`--host-domains`) | multicopy host genes, processed pseudogenes |
+| Structure | consensus sequence | LTRs, TIRs, poly-A tails, tandem period, termini |
+| Copies | genome | copy number, age, TSD length/motif, Helitron ends, flank conservation |
+
+## Toward one classifier (M8, planned)
+
+Today `decide.rs` is a hand-ordered rule cascade: non-TE nucleotide matches first, then protein,
+domains, nucleotide, structure, with copy evidence adjusting the result. Confidence bands were
+calibrated afterwards (high 98.5%, medium 97.1%, low 84.1% agreement). It works, but every new
+evidence type (HMMs, mosaics, Helitron ends, host genes) needs new hand-placed rules, and
+conflicts are settled by rule order rather than by weight of evidence.
+
+The plan is to keep every evidence module and replace the cascade with one scored decision:
+
+1. **Feature table.** `classify` writes one row of typed features per family
+   (best bits/coverage per class from each homology source, domain-implied class, structural
+   hallmarks, TSD length and support, Helitron-end support, copy number, cross-species group label).
+2. **Model.** A multinomial logistic regression over top-level classes plus `non_TE`, then
+   superfamily within the chosen class. Each evidence type contributes a learnable weight, so the
+   model stays interpretable ("TSD 4 bp TTAA: +2.1 for DNA/PiggyBac"). Fitted offline; the weights
+   ship in the refdb (`build/classifier.json`), so no new Rust dependencies.
+3. **Training data.** Curated Repbase/Dfam consensi (clean labels, held out by family cluster) and the
+   600k RepeatClassifier-labelled families from the 559 libraries (noisy; known weak spots such as
+   SINE and RC/Helitron down-weighted). Splits are by species and clade, never by family, to avoid leakage.
+4. **Decision.** Posterior per class. Below a threshold the family is `unresolved`; strong TE
+   hallmarks with no winning class make a `novel_candidate`; confidence is the calibrated probability.
+5. **Rollout.** Run beside the rule cascade on held-out species (`--model`), compare per class,
+   and switch the default only where it is better.
+
+- [ ] M8a feature table (`features.tsv`) from `classify`
+- [ ] M8b offline fit and held-out evaluation against the rule cascade
+- [ ] M8c weights in the refdb; `rep classify --model`
+- [ ] M8d default switch per class once it beats the cascade
+
 ## Responsibility boundary
 
 `rep` does discovery orchestration, copy recovery and **classification/triage**.
@@ -209,6 +269,19 @@ v3 batch (all 559 libraries, 1.70 M families, `--rm-out` copy evidence, rep 6d89
 - Main disagreement: RC/Helitron → DNA/* (9.8k), all low-confidence nucleotide-only calls (e.g. KolobokE).
   Which side is right is open; a candidate rule is to keep a specific original label when our
   only evidence is weak nucleotide homology.
+
+RC/Helitron → DNA/* investigation (2026-10-13):
+- Structure cannot settle most cases: RepeatModeler Helitron consensi rarely reach the element ends
+  (TC…CTRR on 3.6% of agreed Helitrons). A copy-based end test (host A|TC…CTRR|T, null 30 bp out)
+  works where ends exist (Cyaniris family-577: 0.63 vs 0.00), but some real Helitrons insert into
+  A-runs and break the textbook host-T rule.
+- Cause: 9 Repbase/Dfam DNA consensi drove 7.4k of the 10.6k calls, and each carries an embedded
+  Helitron fragment (73–91% identity to Repbase Helitrons); 73% of the disputed hits fall inside it.
+- Fix: `rep refdb mosaics` (2,824 foreign segments in 2,075 of 146k references; SINE segments
+  need ≥3 supporting references; shared SINE/LINE 3' ends exempt). Validation on the 10 most
+  affected libraries pending.
+- Open: 3,870 RepeatModeler "SINEs" we call LINE. RepeatModeler SINE calls are often wrong, so
+  these may be our better calls; check next.
 
 Next:
 - [x] v2/v3 batch → confidence bands calibrated from agreement per evidence bin
