@@ -84,14 +84,24 @@ The plan is to keep every evidence module and replace the cascade with one score
 - [x] Training data, libraries: v4 batch over the 559 libraries (rep c34fbe6; `--rm-out`, `--host-domains`,
       mosaics, HMMs): 1.70M feature rows, 585k with a RepeatClassifier label (LINE 241k, DNA 156k,
       LTR 85k, RC 63k, SINE 34k, PLE 3k); 121 CPU-hours.
-- [ ] Training data, curated: refdb consensi clustered (≥80% identity, member ≥80% covered), clusters
+- [x] Training data, curated: refdb consensi clustered (≥80% identity, member ≥80% covered), clusters
       in 5 folds (~29k consensi each); fold k's reference drops its consensi and the proteins they
-      encode (≥80% identity over ≥50%; ~22% of proteins), with HMMs rebuilt (running).
+      encode (≥80% identity over ≥50%; ~22% of proteins), with HMMs rebuilt. 139k labelled rows.
+      The cascade on them: calls 80.8%, agreement 0.986; LTR recall only 0.715 (solo `-LTR` entries
+      without hallmarks), SINE precision 0.971 (0.854 against RepeatModeler's SINE labels).
 - [ ] M8b offline fit and held-out evaluation against the rule cascade: `scripts/classifier/fit.py`
       (numpy/scipy multinomial logistic regression; log1p scores and counts, missing indicators,
-      standardised; class weights ∝ frequency^-0.5). Evaluation holds out whole orders (5 folds) and
-      compares with the cascade at equal coverage. Smoke test on 30 libraries: agreement 0.943 vs
-      0.929 at the cascade's 84% coverage. Full run going.
+      standardised; class weights ∝ frequency^-0.5; trained on library and curated rows).
+      Libraries held out by order (5 folds; Lepidoptera alone is one): at the cascade's 83.8% coverage,
+      agreement 0.941 vs 0.927; at the cascade's agreement, coverage 86.7%. Curated consensi held
+      out by cluster fold: 0.998 vs 0.986 at equal coverage; 96.2% vs 80.8% coverage at equal agreement.
+      Gate: the cascade's non-TE calls (simple repeats, satellites, RNA and host genes) override the
+      model, restoring nonTE recall 0.51 → 0.97 at no cost elsewhere. The model removes most of the
+      cascade's systematic confusions against RepeatModeler labels (RC→DNA 6,750 → 2,291,
+      SINE→LINE 3,976 → 1,956) and adds LINE→SINE (823 → 2,046) and LINE→RC (659 → 1,573).
+      Superfamily: given the right class, the best-hit superfamily is right in 96.4% of curated
+      consensi (errors within clades: CR1-clade → L2, ERV1/ERVL/ERVK), so the model chooses the class
+      and the superfamily comes from the best hit within it. Still to do: per-class calibration.
 - [ ] M8c weights in the refdb; `rep classify --model`
 - [ ] M8d default switch per class once it beats the cascade
 

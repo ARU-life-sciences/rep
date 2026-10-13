@@ -8,6 +8,7 @@ optional columns), then standardised. Evaluation holds out whole clades (orders)
 families, and compares the model with the rule cascade at the same coverage.
 
     fit.py evaluate --libraries <batch>/results --taxonomy <tsv> [--refdb-holdout <dir>]
+    fit.py report   --predictions <saved .npz>   (cascade, model and gated model from saved predictions)
     fit.py fit      --libraries <batch>/results --taxonomy <tsv> [--refdb-holdout <dir>] --out classifier.json
 
 `--libraries` holds <species>/<accession>/features.tsv (RepeatClassifier labels: noisy).
@@ -210,36 +211,57 @@ def clade_folds(info, k):
     return np.array([fold_of[order] for _, _, (order, _, _) in info]), fold_of
 
 
-def report(y, prob, casc, title):
+def gate(prob, casc):
+    """The cascade's non-TE calls (simple repeats, satellites, RNA genes, host genes) override the model."""
+    out = prob.copy()
+    nonte = casc == CLASSES.index("nonTE")
+    out[nonte] = np.eye(len(CLASSES))[CLASSES.index("nonTE")]
+    return out
+
+
+def at_coverage(y, prob, coverage):
+    """Calls of the most confident `coverage` fraction: (selected mask, predictions, agreement)."""
     n = len(y)
     pred = prob.argmax(axis=1)
-    conf = prob.max(axis=1)
+    order = np.argsort(-prob.max(axis=1), kind="stable")
+    m = max(1, int(round(coverage * n)))
+    sel = np.zeros(n, dtype=bool)
+    sel[order[:m]] = True
+    return sel, pred, (pred[sel] == y[sel]).mean()
+
+
+def coverage_at(y, prob, agreement):
+    """Largest fraction of most-confident calls whose agreement is at least `agreement`."""
+    pred = prob.argmax(axis=1)
+    order = np.argsort(-prob.max(axis=1), kind="stable")
+    correct = (pred[order] == y[order]).cumsum() / np.arange(1, len(y) + 1)
+    ok = np.where(correct >= agreement)[0]
+    return (ok.max() + 1) / len(y) if len(ok) else 0.0
+
+
+def report(y, prob, casc, title):
+    """The cascade against the model and the gated model (cascade non-TE calls first), at equal coverage."""
     called = casc >= 0
     cov_c = called.mean()
     acc_c = (casc[called] == y[called]).mean() if called.any() else float("nan")
-    # model at the cascade's coverage, and at the cascade's accuracy
-    order = np.argsort(-conf)
-    correct = (pred[order] == y[order]).cumsum() / np.arange(1, n + 1)
-    m = max(1, int(round(cov_c * n)))
-    acc_m = correct[m - 1]
-    ok = np.where(correct >= acc_c)[0]
-    cov_m = (ok.max() + 1) / n if len(ok) else 0.0
-    print(f"\n== {title}: {n:,} labelled families")
+    print(f"\n== {title}: {len(y):,} labelled families")
     print(f"cascade: calls {cov_c:.1%}, agreement {acc_c:.3f}")
-    print(f"model  : at the same coverage agreement {acc_m:.3f}; at the cascade's agreement coverage {cov_m:.1%};"
-          f" all families {(pred == y).mean():.3f}")
-    print(f"{'class':<11}{'n':>9}{'casc_rec':>9}{'casc_prec':>10}{'model_rec':>10}{'model_prec':>11}   (model at cascade coverage)")
-    thr = conf[order[m - 1]]
-    sel = conf >= thr
+    variants = {"model": prob, "gated": gate(prob, casc)}
+    sel = {}
+    for name, pr in variants.items():
+        s, pred, acc = at_coverage(y, pr, cov_c)
+        sel[name] = (s, pred)
+        print(f"{name:<7}: at the same coverage agreement {acc:.3f}; at the cascade's agreement coverage "
+              f"{coverage_at(y, pr, acc_c):.1%}; all families {(pred == y).mean():.3f}")
+    print(f"{'class':<11}{'n':>9}{'cascade':>15}{'model':>15}{'gated':>15}   recall/precision at cascade coverage")
     for k, c in enumerate(CLASSES):
         t = y == k
         if not t.any():
             continue
-        cr = (called & t & (casc == y)).sum() / t.sum()
-        cp = ((casc == k) & t).sum() / max(1, (casc == k).sum())
-        mr = (sel & t & (pred == y)).sum() / t.sum()
-        mp = (sel & (pred == k) & t).sum() / max(1, (sel & (pred == k)).sum())
-        print(f"{c:<11}{t.sum():>9,}{cr:>9.3f}{cp:>10.3f}{mr:>10.3f}{mp:>11.3f}")
+        cells = [f"{(called & t & (casc == y)).sum() / t.sum():.3f}/{((casc == k) & t).sum() / max(1, (casc == k).sum()):.3f}"]
+        for s, pred in sel.values():
+            cells.append(f"{(s & t & (pred == y)).sum() / t.sum():.3f}/{(s & (pred == k) & t).sum() / max(1, (s & (pred == k)).sum()):.3f}")
+        print(f"{c:<11}{t.sum():>9,}" + "".join(f"{x:>15}" for x in cells))
 
 
 def evaluate(args):
@@ -270,10 +292,10 @@ def evaluate(args):
                             species=[sp for (s, sp, _), l in zip(info, lib) if l],
                             order=[o for (s, _, (o, _, _)), l in zip(info, lib) if l])
     if (~lib).any():
-        refdb_eval(args, columns, num, y, info, casc)
+        refdb_eval(args, columns, num, ids, y, info, casc)
 
 
-def refdb_eval(args, columns, num, y, info, casc):
+def refdb_eval(args, columns, num, ids, y, info, casc):
     """Curated consensi: train on libraries plus the other refdb folds, test on each refdb fold."""
     src = np.array([s for s, _, _ in info])
     rfold = np.array([sp if s == "refdb" else "" for s, sp, _ in info])
@@ -288,6 +310,15 @@ def refdb_eval(args, columns, num, y, info, casc):
         prob[ti] = predict(coef, tr(num[ti]))
     r = src == "refdb"
     report(y[r], prob[r], casc[r], "curated consensi, held out by cluster fold")
+    if args.save:
+        np.savez_compressed(args.save.replace(".npz", "") + "_curated.npz", y=y[r], prob=prob[r], cascade=casc[r],
+                            classes=CLASSES, family=[x[0] for x, k in zip(ids, r) if k],
+                            fold=rfold[r])
+
+
+def report_saved(args):
+    d = np.load(args.predictions)
+    report(d["y"], d["prob"], d["cascade"], args.predictions)
 
 
 def fit(args):
@@ -311,7 +342,8 @@ def fit(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=["evaluate", "fit"])
+    p.add_argument("command", choices=["evaluate", "fit", "report"])
+    p.add_argument("--predictions", help="report: a saved .npz of held-out predictions")
     p.add_argument("--libraries")
     p.add_argument("--refdb-holdout")
     p.add_argument("--taxonomy")
@@ -323,7 +355,7 @@ def main():
     p.add_argument("--out", default="classifier.json")
     p.add_argument("--save", help="evaluate: write held-out predictions to this .npz")
     args = p.parse_args()
-    {"evaluate": evaluate, "fit": fit}[args.command](args)
+    {"evaluate": evaluate, "fit": fit, "report": report_saved}[args.command](args)
 
 
 if __name__ == "__main__":
