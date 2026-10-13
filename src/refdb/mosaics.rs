@@ -90,6 +90,19 @@ struct Containment {
     guest_class: String,
     start: u64,
     end: u64,
+    host_length: u64,
+}
+
+/// SINE 3' tails derive from LINE 3' ends, so the two classes share that
+/// stretch legitimately: a LINE segment in a SINE's 3' part, or a SINE
+/// segment at a LINE's 3' end, is not an embedded element.
+fn shared_sine_line_end(host_class: &str, guest_class: &str, end: u64, host_length: u64) -> bool {
+    let tail = |fraction: f64| end as f64 >= fraction * host_length as f64;
+    match (host_class, guest_class) {
+        ("SINE", "LINE") => tail(0.6),
+        ("LINE", "SINE") => tail(0.9),
+        _ => false,
+    }
 }
 
 /// Search the nucleotide library against itself and write `build/mosaics.tsv`.
@@ -201,6 +214,7 @@ pub fn mosaics_from_hits(path: &Path, o: &MosaicOptions) -> Result<Vec<Mosaic>> 
                 guest_class,
                 start,
                 end,
+                host_length: qlen,
             });
     }
 
@@ -230,6 +244,9 @@ pub fn mosaics_from_hits(path: &Path, o: &MosaicOptions) -> Result<Vec<Mosaic>> 
                 }
             }
             for (start, end, members) in segments {
+                if shared_sine_line_end(&host_class, class, end, members[0].host_length) {
+                    continue;
+                }
                 let mut guests = members.iter().map(|g| g.guest.as_str()).collect::<Vec<_>>();
                 guests.sort_unstable();
                 guests.dedup();
@@ -488,5 +505,41 @@ mod tests {
         assert!(mosaics_from_hits(&hits, &MosaicOptions::default())
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn shared_sine_line_ends_are_not_mosaics() {
+        let dir = tempfile::tempdir().unwrap();
+        let hits = dir.path().join("self.m8");
+        let rows = [
+            // the LINE-derived 3' tail of a SINE, and a LINE 3' end matched by SINE tails
+            row(
+                "SINE2-1#SINE/tRNA",
+                "BovB#LINE/RTE",
+                124,
+                232,
+                240,
+                3000,
+                3110,
+                3200,
+            ),
+            row(
+                "L2-1#LINE/L2",
+                "MIR#SINE/MIR",
+                3150,
+                3290,
+                3300,
+                120,
+                260,
+                260,
+            ),
+            // a SINE inserted in the middle of a LINE consensus is a mosaic
+            row("L1-1#LINE/L1", "B2#SINE/B2", 1288, 1484, 6000, 1, 190, 200),
+        ]
+        .concat();
+        fs::write(&hits, rows).unwrap();
+        let m = mosaics_from_hits(&hits, &MosaicOptions::default()).unwrap();
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(m[0].reference, "L1-1#LINE/L1");
     }
 }
