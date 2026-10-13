@@ -81,10 +81,17 @@ The plan is to keep every evidence module and replace the cascade with one score
       bits/coverage/identity (plus nonTE); mosaic and chimera flags; domain-implied class and 15 domain
       roles; host-gene domains; structure (length, GC, LTR, TIR, tails, tandem, ORFs, termini); copies
       (loci, full-length, identity, genome bp, TSD length/support/null, flank similarity, Helitron ends).
-- [ ] Training data: a v4 batch over the 559 libraries (`--rm-out`, `--host-domains`, mosaics, HMMs)
-      writes `features.tsv` per library; plus the curated refdb consensi run through classify
-      with themselves held out.
-- [ ] M8b offline fit and held-out evaluation against the rule cascade
+- [x] Training data, libraries: v4 batch over the 559 libraries (rep c34fbe6; `--rm-out`, `--host-domains`,
+      mosaics, HMMs): 1.70M feature rows, 585k with a RepeatClassifier label (LINE 241k, DNA 156k,
+      LTR 85k, RC 63k, SINE 34k, PLE 3k); 121 CPU-hours.
+- [ ] Training data, curated: refdb consensi clustered (≥80% identity, member ≥80% covered), clusters
+      in 5 folds (~29k consensi each); fold k's reference drops its consensi and the proteins they
+      encode (≥80% identity over ≥50%; ~22% of proteins), with HMMs rebuilt (running).
+- [ ] M8b offline fit and held-out evaluation against the rule cascade: `scripts/classifier/fit.py`
+      (numpy/scipy multinomial logistic regression; log1p scores and counts, missing indicators,
+      standardised; class weights ∝ frequency^-0.5). Evaluation holds out whole orders (5 folds) and
+      compares with the cascade at equal coverage. Smoke test on 30 libraries: agreement 0.943 vs
+      0.929 at the cascade's 84% coverage. Full run going.
 - [ ] M8c weights in the refdb; `rep classify --model`
 - [ ] M8d default switch per class once it beats the cascade
 
