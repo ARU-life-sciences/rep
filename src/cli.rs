@@ -247,13 +247,13 @@ fn recover_copies_command() -> clap::Command {
         .arg(
             Arg::new("blast-task")
                 .long("blast-task")
-                .default_value("dc-megablast")
+                .default_value("blastn")
                 .value_parser(["megablast", "dc-megablast", "blastn", "blastn-short"]),
         )
         .arg(
             Arg::new("evalue")
                 .long("evalue")
-                .default_value("1e-10")
+                .default_value("1e-5")
                 .value_parser(value_parser!(f64)),
         )
         .arg(Arg::new("aligner").long("aligner").default_value("mafft"))
@@ -822,16 +822,29 @@ mod tests {
             "--out",
             "o",
             "--evalue",
-            "1e-5",
+            "1e-3",
             "--blast-task",
-            "blastn",
+            "dc-megablast",
             "--diversity-filter",
         ])
         .unwrap();
-        assert_eq!(c.blast_task, "blastn");
-        assert_eq!(c.evalue, 1e-5);
+        assert_eq!(c.blast_task, "dc-megablast");
+        assert_eq!(c.evalue, 1e-3);
         assert!(c.diversity_filter);
         assert_eq!(c.hits_per_family, 20);
+        let d = recover_copies_from([
+            "recover-copies",
+            "--queries",
+            fa,
+            "--genome",
+            fa,
+            "--out",
+            "o",
+        ])
+        .unwrap();
+        assert_eq!(d.blast_task, crate::copy_recovery::default_blast_task());
+        assert_eq!(d.evalue, crate::copy_recovery::default_evalue());
+        assert_eq!((d.blast_task.as_str(), d.evalue), ("blastn", 1e-5));
     }
 
     #[test]

@@ -132,7 +132,8 @@ be right first.
 - [x] Fragment merging fused neighbouring independent copies (query ranges overlapped).
 - [x] Excluded loci (`ambiguous_strand`) could still be selected by ranking.
 - [x] Duplicate collapse discarded rejected loci; IDs were renumbered, so references went stale.
-- [x] BLASTN used megablast with E-value 10; it now uses `dc-megablast` and `1e-10` (configurable).
+- [x] BLASTN used megablast with E-value 10; it now uses `blastn` at `1e-5` (configurable; `dc-megablast`
+      at `1e-10` until 2026-10-13, see M2).
 - [x] The 12-column BLAST path read the wrong columns; only the 13-column layout is accepted now.
 - [x] The left flank was always reported as 0 and requested intervals were wrong in `copies.tsv`.
 - [x] Added per-family `loci.bed` and top-level `loci.tsv`, and fingerprints now stream the genome instead of reading it into memory.
@@ -175,6 +176,11 @@ be right first.
       with nothing else are promoted to low-confidence novel candidates.
 - [x] First real genome end to end (*Metschnikowia zobellii*): fixes for tRNAs, fragment matches and conserved flanks.
 - [ ] Validate on *Cloeon dipterum* (94% Unknown), *Amanita rubescens* and the moss (jobs running).
+- [x] Copy-recovery search on *Cloeon dipterum* (898 families): `blastn` at 1e-5 against `dc-megablast` at 1e-10
+      finds a median 115.5 vs 58.5 loci and 29 vs 21 full-length copies per family (Spearman 0.86/0.93),
+      identity 81.7% vs 83.6%; same TSD length in 71 families, 17 called by one only; 7.1 h vs 5.4 h.
+      Against the RepeatMasker `.out` (67 loci, 15 full-length) it evaluates TSDs, flanks and Helitron
+      ends in more families. Default switched to `blastn` at 1e-5.
 - [ ] Copy recovery speed: about 23 s per family, dominated by MAFFT; align families in parallel.
 - [ ] Boundary sharpness from the coverage profile of consensus positions across copies.
 - [ ] Feed `reputils curate` outputs (refined consensus, architecture hints) back in.
