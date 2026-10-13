@@ -39,6 +39,9 @@ pub struct MosaicOptions {
     /// (beyond it, the two references are simply similar).
     pub max_host_fraction: f64,
     pub min_length: u64,
+    /// Supporting references needed for a SINE segment: SINE labels are the
+    /// least reliable (RepeatModeler-derived "SINEs" are often LINE fragments).
+    pub min_sine_support: usize,
     pub threads: usize,
 }
 
@@ -48,6 +51,7 @@ impl Default for MosaicOptions {
             min_contained: 0.0,
             max_host_fraction: 0.5,
             min_length: 80,
+            min_sine_support: 3,
             threads: 1,
         }
     }
@@ -264,7 +268,12 @@ pub fn mosaics_from_hits(path: &Path, o: &MosaicOptions) -> Result<Vec<Mosaic>> 
                     .collect::<Vec<_>>();
                 own.sort_unstable();
                 own.dedup();
-                if guests.len() > own.len() {
+                let needed = if class == "SINE" {
+                    o.min_sine_support
+                } else {
+                    1
+                };
+                if guests.len() > own.len() && guests.len() >= needed {
                     // the most common full label among the embedded references
                     let mut labels: BTreeMap<String, usize> = BTreeMap::new();
                     for g in &guests {
@@ -535,11 +544,38 @@ mod tests {
             ),
             // a SINE inserted in the middle of a LINE consensus is a mosaic
             row("L1-1#LINE/L1", "B2#SINE/B2", 1288, 1484, 6000, 1, 190, 200),
+            row("L1-1#LINE/L1", "B2b#SINE/B2", 1290, 1480, 6000, 1, 190, 200),
+            row("L1-1#LINE/L1", "B2c#SINE/B2", 1288, 1470, 6000, 5, 190, 200),
         ]
         .concat();
         fs::write(&hits, rows).unwrap();
         let m = mosaics_from_hits(&hits, &MosaicOptions::default()).unwrap();
         assert_eq!(m.len(), 1, "{m:?}");
         assert_eq!(m[0].reference, "L1-1#LINE/L1");
+    }
+
+    #[test]
+    fn sine_segments_need_more_support() {
+        let dir = tempfile::tempdir().unwrap();
+        let hits = dir.path().join("self.m8");
+        let l = "CR1-3#LINE/CR1";
+        let one = row(l, "SINE2-3#SINE/tRNA", 1000, 1200, 3300, 1, 200, 210);
+        fs::write(&hits, &one).unwrap();
+        assert!(mosaics_from_hits(&hits, &MosaicOptions::default())
+            .unwrap()
+            .is_empty());
+        let three = [
+            one,
+            row(l, "B2-a#SINE/B2", 1000, 1190, 3300, 1, 190, 200),
+            row(l, "B2-b#SINE/B2", 1010, 1200, 3300, 1, 190, 200),
+        ]
+        .concat();
+        fs::write(&hits, three).unwrap();
+        assert_eq!(
+            mosaics_from_hits(&hits, &MosaicOptions::default())
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }
