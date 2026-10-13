@@ -120,9 +120,23 @@ be right first.
 - [x] Benchmark on 712 intact Repbase consensi from 19 classes, using domains only and no homology:
       top-level precision 100% (0 wrong class), recall 60%, 3 superfamily errors and no false novel flags.
       Pao 37/40, Gypsy 39/40, Copia 32/40, MULE 32/40, PIF-Harbinger 34/40, LINEs ~80% to class level.
-- [ ] Poorly detected by Pfam: Crypton (0/30), Penelope (2/40), DIRS (8/40), Maverick (11/40), P (11/40).
-      Build our own superfamily-specific profile HMMs from the 78k labelled refdb proteins
-      (cluster → align → `hmmbuild`) and scan them alongside the Pfam subset.
+- [x] Superfamily profile HMMs (`rep refdb hmms`): labelled refdb proteins clustered with MMseqs2
+      (30% identity, 50% coverage), split by label, ≥5 members aligned with MAFFT, `hmmbuild`; models
+      named `hmm_<rep>#<label>`. `rep classify` scans them with `hmmsearch` (`--te-hmms`, automatic with
+      `--refdb` once built) on ORFs of families without a strong (≥200 bit) BLASTX hit.
+- [x] Held-out benchmark (same 712 elements, domains only; training proteins ≥80% / ≥50% identical
+      to any benchmark ORF removed; 1,685 / 1,559 models):
+
+      | set              | called | class precision | exact superfamily |
+      |------------------|--------|-----------------|-------------------|
+      | Pfam only        | 60.1%  | 1.000           | 59.7%             |
+      | + HMMs, 80% hold | 92.4%  | 0.992           | 90.7%             |
+      | + HMMs, 50% hold | 88.6%  | 0.987           | 85.7%             |
+
+      Pfam's weak classes at the 80% hold-out: Penelope 2→40/40, DIRS 8→38, Maverick 11→34, P 11→35,
+      Crypton 0→18/30 (0 at the 50% hold-out: Crypton needs close relatives). Most wrong-class calls are
+      biologically ambiguous (Teratorn piggyBac–herpesvirus fusions, MuDR-7_HM with an RT domain).
+- [ ] Production HMM set for `/software/team301/te_refdb/hmms` (LSF job 221574).
 - [ ] Host-gene flags: scan ORFs that lack TE domains against full Pfam (kinases, zinc fingers, ...).
 
 ### M4 – Novelty discovery and negative filters (started)
@@ -135,7 +149,7 @@ be right first.
 - [x] Label propagation to Unknowns from labelled cluster or group members (purity ≥ 0.75), with
       leave-one-out accuracy. 20-library test: 95.2% (family clusters, n=3,005) and 98.0% (groups, n=7,845).
 - [x] Novel groups (no labelled member) ranked by species breadth, abundance and TE hallmarks.
-- [ ] Full run on all 559 libraries, then with copy evidence (v3 classify with `--rm-out`).
+- [ ] Full run on all 559 v3 libraries with copy evidence (LSF job 213364).
 - [ ] Negative filters: rRNA, tRNA and snRNA (Infernal and Rfam), organellar inserts, multi-copy host genes.
 - [ ] Per-candidate evidence report (alignment of members, domain maps, copy landscape).
 
@@ -172,8 +186,17 @@ Findings from the first batch (v1, 48 libraries, 2026-10-12):
 - Structural detectors against composition-preserving shuffles: TIR 7.5% vs 0.6%, poly-A 2.8% vs 0.3%.
 - Real-data defects handled: repeated library IDs (7 libraries) and Repbase Helitrons filed under "DNA transposon".
 
+v3 batch (all 559 libraries, 1.70 M families, `--rm-out` copy evidence, rep 6d89abb; 2026-10-13):
+- 1,113,482 RepeatClassifier Unknowns: interspersed_repeat 38.6%, unresolved 38.0%, novel_candidate
+  12.3%, known_te 10.8%, satellite/simple/chimeric/host 0.5%.
+- Calibrated agreement with RepeatClassifier on labelled families: high 98.5% (n=77k), medium 97.1%
+  (n=223k), low 84.1% (n=181k). Overall 77.4%, the shortfall mostly families we leave Unknown.
+- Main disagreement: RC/Helitron → DNA/* (9.8k), all low-confidence nucleotide-only calls (e.g. KolobokE).
+  Which side is right is open; a candidate rule is to keep a specific original label when our
+  only evidence is weak nucleotide homology.
+
 Next:
-- [ ] v2 batch (all 559, sensitive search) → calibrate confidence bands from agreement per evidence bin
+- [x] v2/v3 batch → confidence bands calibrated from agreement per evidence bin
       (`target/dev/calibrate.py` prototype; move into `rep` as a calibration table).
 - [ ] Hold-out benchmark: strip labels from RepeatClassifier-classified families and score recovery per class.
 - [ ] Consider `nhmmer` against Dfam curated HMMs for the most diverged relationships.
