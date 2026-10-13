@@ -278,8 +278,11 @@ RC/Helitron → DNA/* investigation (2026-10-13):
 - Cause: 9 Repbase/Dfam DNA consensi drove 7.4k of the 10.6k calls, and each carries an embedded
   Helitron fragment (73–91% identity to Repbase Helitrons); 73% of the disputed hits fall inside it.
 - Fix: `rep refdb mosaics` (2,824 foreign segments in 2,075 of 146k references; SINE segments
-  need ≥3 supporting references; shared SINE/LINE 3' ends exempt). Validation on the 10 most
-  affected libraries pending.
+  need ≥3 supporting references; shared SINE/LINE 3' ends exempt). On the 10 most affected
+  libraries: RC/Helitron → DNA 899 → 443, agreement 62.6% → 65.8%, 742 labels changed (431
+  Kolobok → Helitron); ~15 regressions (Helitron references carrying DNA/LTR segments).
+  The remaining calls hit references the vote missed or outvoted (P-2_CydSpl 83, Fanzor1-1_HemFu 54,
+  TE0839_SO2_FAM1819 26); 92% are low-confidence nucleotide-only, which M8 should weigh properly.
 - Open: 3,870 RepeatModeler "SINEs" we call LINE. RepeatModeler SINE calls are often wrong, so
   these may be our better calls; check next.
 
