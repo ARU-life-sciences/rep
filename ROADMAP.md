@@ -89,7 +89,7 @@ The plan is to keep every evidence module and replace the cascade with one score
       encode (≥80% identity over ≥50%; ~22% of proteins), with HMMs rebuilt. 139k labelled rows.
       The cascade on them: calls 80.8%, agreement 0.986; LTR recall only 0.715 (solo `-LTR` entries
       without hallmarks), SINE precision 0.971 (0.854 against RepeatModeler's SINE labels).
-- [ ] M8b offline fit and held-out evaluation against the rule cascade: `scripts/classifier/fit.py`
+- [x] M8b offline fit and held-out evaluation against the rule cascade: `scripts/classifier/fit.py`
       (numpy/scipy multinomial logistic regression; log1p scores and counts, missing indicators,
       standardised; class weights ∝ frequency^-0.5; trained on library and curated rows).
       Libraries held out by order (5 folds; Lepidoptera alone is one): at the cascade's 83.8% coverage,
@@ -101,8 +101,15 @@ The plan is to keep every evidence module and replace the cascade with one score
       SINE→LINE 3,976 → 1,956) and adds LINE→SINE (823 → 2,046) and LINE→RC (659 → 1,573).
       Superfamily: given the right class, the best-hit superfamily is right in 96.4% of curated
       consensi (errors within clades: CR1-clade → L2, ERV1/ERVL/ERVK), so the model chooses the class
-      and the superfamily comes from the best hit within it. Still to do: per-class calibration.
-- [ ] M8c weights in the refdb; `rep classify --model`
+      and the superfamily comes from the best hit within it. Posteriors are calibrated as they are
+      (held-out agreement 0.70–0.80: 78%, 0.90–0.95: 94%, ≥0.99: 98.2%; the shortfall at the top is label
+      noise). Gated, on curated consensi: 0.997 at the cascade's coverage, 96.7% coverage at its agreement.
+      Final fit on all 724k rows: `build/classifier.json` (v2, 2026-10-13).
+- [x] M8c weights in the refdb (`build/classifier.json`, shown by `rep refdb status`); `classify` loads it
+      automatically with `--refdb` (or `--model <json>`) and adds model_class, model_label,
+      model_probability and model_confidence (high ≥0.99, medium ≥0.9, low ≥0.7, else none) to
+      `classification.tsv`, with agreement against the cascade in `summary.json`. The cascade's decision
+      is unchanged. Rust and Python inference agree to 7e-5 (TSV rounding).
 - [ ] M8d default switch per class once it beats the cascade
 
 ## Responsibility boundary
