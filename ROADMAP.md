@@ -136,7 +136,13 @@ be right first.
       Pfam's weak classes at the 80% hold-out: Penelope 2→40/40, DIRS 8→38, Maverick 11→34, P 11→35,
       Crypton 0→18/30 (0 at the 50% hold-out: Crypton needs close relatives). Most wrong-class calls are
       biologically ambiguous (Teratorn piggyBac–herpesvirus fusions, MuDR-7_HM with an RT domain).
-- [ ] Production HMM set for `/software/team301/te_refdb/hmms` (LSF job 221574).
+- [x] Production set in `/software/team301/te_refdb/hmms`: 1,712 models, 124 labels, from 77k proteins
+      (30 min on 16 cores; `.hmm` only, as hmmsearch needs no pressed files).
+- [x] Real-library trial (*Agrochola circellaris*, 3,751 families, `--all --host-domains` + `.out` copies:
+      6 min, 1 GB): profile hits on 195 families, all already labelled. They raise confidence
+      (15 calls, e.g. PIF-Harbinger, Academ, Transib low → medium) but resolve no extra Unknowns, because
+      this moth's Unknowns are almost all non-coding (14 have an ORF and no protein hit). Expect gains
+      in poorly sampled taxa with diverged coding elements rather than in Lepidoptera.
 - [x] Host-gene flags (`--host-domains`): ORFs of families without TE protein or domain evidence are
       scanned against all of Pfam (`hmmsearch --cut_ga`); non-TE-associated domains make the family
       `host_or_artefact` (`Other/host_gene`), or a `possible_gene_capture` warning when it has TE structure.
