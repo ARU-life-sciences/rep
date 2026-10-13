@@ -85,8 +85,16 @@ pub fn run_copy_recovery_with_runner(
         c.evalue,
     );
     crate::command_runner::run_checked(r, &mut cmd, "blastn")?;
-    let hits = parse_blast_file(&blast)?;
+    let mut hits = parse_blast_file(&blast)?;
     let provider = FastaSequenceProvider::from_file(&c.genome)?;
+    // report contigs by the genome's own names, so BED and TSV outputs match the FASTA
+    for hit in &mut hits {
+        if let Some(name) = provider.resolve(&hit.subject_id) {
+            if name != hit.subject_id {
+                hit.subject_id = name.to_owned();
+            }
+        }
+    }
     let mafft_exe = executable("mafft");
     let mut fams = Vec::new();
     let mut all_loci = Vec::new();
