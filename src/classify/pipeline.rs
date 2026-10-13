@@ -12,12 +12,12 @@ use serde::{Deserialize, Serialize};
 use super::{
     copies::{read_copy_evidence, CopyEvidence, CopyParams},
     decide::{
-        apply_copy_evidence, decide, is_non_te, respect_original_label, DecisionThresholds,
-        Disposition, DispositionKind,
+        apply_copy_evidence, apply_host_domains, decide, is_non_te, respect_original_label,
+        DecisionThresholds, Disposition, DispositionKind,
     },
     domains::{
         extract_te_models, hmmpress_command, hmmscan_command, interpret, parse_domtblout,
-        DomainEvidence, DomainHit, TE_DOMAINS,
+        parse_host_domains, DomainEvidence, DomainHit, TE_DOMAINS,
     },
     homology::{
         blastn_library_command, blastx_command, diamond_blastx_command, diamond_makedb_command,
@@ -48,6 +48,9 @@ pub struct ClassifyConfig {
     pub pfam: Option<PathBuf>,
     /// Pressed superfamily profile HMMs (`rep refdb hmms`), named `<model>#<label>`.
     pub te_hmms: Option<PathBuf>,
+    /// Scan ORFs of families without TE protein evidence against all of
+    /// `pfam` to recognise multicopy host genes.
+    pub host_domains: bool,
     /// `rep recover-copies` output directory for copy-based evidence.
     pub copies_dir: Option<PathBuf>,
     /// RepeatMasker `.out` annotation of the genome with this library; used
@@ -78,6 +81,7 @@ impl ClassifyConfig {
             index_dir: None,
             pfam: None,
             te_hmms: None,
+            host_domains: false,
             copies_dir: None,
             rm_out: None,
             genome: None,
@@ -264,6 +268,30 @@ pub fn run_classify_with_runner(
             .push(hit);
     }
 
+    // host-gene domains on ORFs of families with no TE protein evidence
+    let host_by_family = match (&c.pfam, c.host_domains) {
+        (Some(pfam), true) => {
+            let te_protein = hits
+                .iter()
+                .filter(|h| h.class.as_deref().is_some_and(|l| !is_non_te(l)))
+                .map(|h| h.query_id.as_str())
+                .chain(domains_by_family.keys().copied())
+                .collect::<HashSet<_>>();
+            let (families, structures): (Vec<_>, Vec<_>) = selected
+                .iter()
+                .zip(&structures)
+                .filter(|(f, s)| !s.orfs.is_empty() && !te_protein.contains(f.id.as_str()))
+                .map(|(f, s)| (*f, s.clone()))
+                .unzip();
+            if families.is_empty() {
+                BTreeMap::new()
+            } else {
+                scan_host_domains(c, pfam, &families, &structures, runner, &mut commands)?
+            }
+        }
+        _ => BTreeMap::new(),
+    };
+
     // copy evidence from an existing RepeatMasker annotation, if given
     let rm_hits = match &c.rm_out {
         Some(path) => {
@@ -318,6 +346,9 @@ pub fn run_classify_with_runner(
         };
         if let Some(evidence) = &copies {
             disposition = apply_copy_evidence(disposition, evidence, family.seq.len());
+        }
+        if let Some(host) = host_by_family.get(&family.id) {
+            disposition = apply_host_domains(disposition, host, &structure, copies.as_ref());
         }
         let te_coding_evidence = homology.classes.iter().any(|c| !is_non_te(&c.class))
             || domains.inferred.is_some()
@@ -680,6 +711,32 @@ fn count_models(hmms: &Path) -> Result<usize> {
         n += usize::from(line?.starts_with("NAME "));
     }
     Ok(n)
+}
+
+/// Scan the ORFs of `families` against the full Pfam (gathering thresholds)
+/// and return their host-gene domains by family.
+fn scan_host_domains(
+    c: &ClassifyConfig,
+    pfam: &Path,
+    families: &[&LibraryFamily],
+    structures: &[StructuralEvidence],
+    runner: &dyn CommandRunner,
+    commands: &mut Vec<Vec<String>>,
+) -> Result<BTreeMap<String, Vec<(String, f64)>>> {
+    let orfs = c.output_dir.join("host_orfs.faa");
+    write_orfs(&orfs, families, structures)?;
+    let out = c.output_dir.join("host_domains.domtblout");
+    let mut scan = Command::new(crate::copy_recovery::executable("hmmsearch"));
+    scan.args(["--cut_ga", "--noali", "-o", "/dev/null", "--cpu"])
+        .arg(c.threads.to_string())
+        .arg("--domtblout")
+        .arg(&out)
+        .arg(pfam)
+        .arg(&orfs);
+    commands.push(command_line(&scan));
+    run_checked(runner, &mut scan, "hmmsearch (host domains)")?;
+    fs::remove_file(&orfs).ok();
+    parse_host_domains(&out)
 }
 
 /// Scan ORFs with the TE domain subset of Pfam, extracting and pressing the

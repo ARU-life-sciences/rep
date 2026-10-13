@@ -137,7 +137,11 @@ be right first.
       Crypton 0→18/30 (0 at the 50% hold-out: Crypton needs close relatives). Most wrong-class calls are
       biologically ambiguous (Teratorn piggyBac–herpesvirus fusions, MuDR-7_HM with an RT domain).
 - [ ] Production HMM set for `/software/team301/te_refdb/hmms` (LSF job 221574).
-- [ ] Host-gene flags: scan ORFs that lack TE domains against full Pfam (kinases, zinc fingers, ...).
+- [x] Host-gene flags (`--host-domains`): ORFs of families without TE protein or domain evidence are
+      scanned against all of Pfam (`hmmsearch --cut_ga`); non-TE-associated domains make the family
+      `host_or_artefact` (`Other/host_gene`), or a `possible_gene_capture` warning when it has TE structure.
+      Water vole: 13 of 95 Unknowns are ribosomal-protein, HMG, actin, cyclophilin, MHC and olfactory
+      receptor genes (processed pseudogenes); 70 s for the whole classify run.
 
 ### M4 – Novelty discovery and negative filters (started)
 
@@ -149,7 +153,12 @@ be right first.
 - [x] Label propagation to Unknowns from labelled cluster or group members (purity ≥ 0.75), with
       leave-one-out accuracy. 20-library test: 95.2% (family clusters, n=3,005) and 98.0% (groups, n=7,845).
 - [x] Novel groups (no labelled member) ranked by species breadth, abundance and TE hallmarks.
-- [ ] Full run on all 559 v3 libraries with copy evidence (LSF job 213364).
+- [x] Full run on all 559 v3 libraries (1.70 M families, 50 min, 6 GB): leave-one-out accuracy 96.6%
+      (family clusters, n=109k) / 98.5% (groups, n=256k); 41.9k Unknowns propagated; 45k multi-species
+      novel groups. Top-ranked groups are TIR-bearing non-coding families shared by 20–40 noctuid moths.
+      Groups that are mostly simple/satellite/host members are no longer called novel (`non_te` column);
+      cross-kingdom "novel" coding groups were host genes (7tm, actin, ribosomal S2, EGF), so
+      v4 classify runs with `--host-domains`.
 - [ ] Negative filters: rRNA, tRNA and snRNA (Infernal and Rfam), organellar inserts, multi-copy host genes.
 - [ ] Per-candidate evidence report (alignment of members, domain maps, copy landscape).
 

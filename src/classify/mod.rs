@@ -18,12 +18,12 @@ mod taxonomy;
 
 pub use copies::{expected_tsd, read_copy_evidence, CopyEvidence, CopyParams, Tsd};
 pub use decide::{
-    apply_copy_evidence, decide, is_non_te, Confidence, DecisionThresholds, Disposition,
-    DispositionKind,
+    apply_copy_evidence, apply_host_domains, decide, is_non_te, Confidence, DecisionThresholds,
+    Disposition, DispositionKind, HOST_GENE_LABEL,
 };
 pub use domains::{
-    extract_te_models, hmmscan_command, interpret, parse_domtblout, role_of, DomainEvidence,
-    DomainHit, Role, TE_DOMAINS,
+    extract_te_models, hmmscan_command, interpret, is_te_associated, parse_domtblout,
+    parse_host_domains, role_of, DomainEvidence, DomainHit, Role, TE_DOMAINS,
 };
 pub use homology::{
     blastn_library_command, blastx_command, diamond_blastx_command, diamond_makedb_command,

@@ -437,6 +437,56 @@ pub fn decide(
     }
 }
 
+/// Label written for families explained as multicopy host genes.
+pub const HOST_GENE_LABEL: &str = "Other/host_gene";
+
+/// Weigh host-gene Pfam domains on a family's ORFs (`domains`, strongest
+/// first; only scanned where no TE protein or domain evidence was found).
+/// TE structure (terminal repeats, TSDs) or TE homology suggests a captured
+/// gene and only adds a warning; otherwise the family is a multicopy host
+/// gene or processed pseudogene rather than a TE.
+pub fn apply_host_domains(
+    mut d: Disposition,
+    domains: &[(String, f64)],
+    s: &StructuralEvidence,
+    copies: Option<&CopyEvidence>,
+) -> Disposition {
+    if domains.is_empty() {
+        return d;
+    }
+    let names = domains
+        .iter()
+        .take(5)
+        .map(|(n, _)| n.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let te_like = matches!(d.kind, DispositionKind::KnownTe | DispositionKind::Chimeric)
+        || s.ltr.is_some()
+        || s.tir.is_some()
+        || copies.is_some_and(|c| c.tsd.is_some());
+    if te_like {
+        d.warnings
+            .push(format!("host_gene_domains:{names}(possible_gene_capture)"));
+        return d;
+    }
+    // satellites and simple repeats keep their explanation
+    if !matches!(
+        d.kind,
+        DispositionKind::NovelCandidate
+            | DispositionKind::InterspersedRepeat
+            | DispositionKind::Unresolved
+    ) {
+        return d;
+    }
+    d.evidence.push(format!("host_gene_domains:{names}"));
+    d.warnings
+        .push(format!("was:{}:{}", d.kind.as_str(), d.label));
+    d.kind = DispositionKind::HostOrArtefact;
+    d.label = HOST_GENE_LABEL.to_owned();
+    d.confidence = Confidence::Medium;
+    d
+}
+
 /// Refine a disposition with evidence from recovered genomic copies:
 /// TSD length versus the class expectation, copy number, and flank conservation.
 pub fn apply_copy_evidence(mut d: Disposition, c: &CopyEvidence, length: usize) -> Disposition {
@@ -1131,5 +1181,46 @@ mod tests {
             &DecisionThresholds::default(),
         );
         assert_eq!(d.kind, DispositionKind::Chimeric);
+    }
+
+    #[test]
+    fn host_gene_domains_explain_codings_without_te_structure() {
+        let host = vec![("Actin".to_owned(), 300.0), ("7tm_1".to_owned(), 50.0)];
+        let plain = analyse(&random(1500, 5), &StructureParams::default());
+        let d = apply_host_domains(
+            disposition(DispositionKind::NovelCandidate, "Unknown", Confidence::Low),
+            &host,
+            &plain,
+            None,
+        );
+        assert_eq!(
+            (d.kind, d.label.as_str()),
+            (DispositionKind::HostOrArtefact, HOST_GENE_LABEL)
+        );
+        assert!(d.evidence.contains(&"host_gene_domains:Actin,7tm_1".to_owned()));
+        // terminal inverted repeats point to a TE that captured the gene
+        let mut tir = plain.clone();
+        tir.tir = Some(TerminalRepeat {
+            length: 30,
+            identity: 0.95,
+            five_prime_offset: 0,
+            three_prime_offset: 0,
+        });
+        let d = apply_host_domains(
+            disposition(DispositionKind::NovelCandidate, "DNA/Unknown", Confidence::Low),
+            &host,
+            &tir,
+            None,
+        );
+        assert_eq!(d.kind, DispositionKind::NovelCandidate);
+        assert!(d.warnings[0].starts_with("host_gene_domains:Actin"));
+        // satellites keep their explanation
+        let d = apply_host_domains(
+            disposition(DispositionKind::Satellite, "Satellite", Confidence::Medium),
+            &host,
+            &plain,
+            None,
+        );
+        assert_eq!(d.kind, DispositionKind::Satellite);
     }
 }

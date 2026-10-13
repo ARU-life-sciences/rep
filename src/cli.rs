@@ -442,6 +442,13 @@ fn classify_command() -> clap::Command {
                 .value_parser(value_parser!(PathBuf)),
         )
         .arg(
+            Arg::new("host-domains")
+                .long("host-domains")
+                .help("With --pfam: scan ORFs lacking TE evidence against all of Pfam to flag multicopy host genes")
+                .requires("pfam")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("min-orf-aa")
                 .long("min-orf-aa")
                 .default_value("100")
@@ -478,6 +485,7 @@ where
     };
     config.all_families = m.get_flag("all");
     config.pfam = m.get_one::<PathBuf>("pfam").cloned();
+    config.host_domains = m.get_flag("host-domains");
     if let Some(hmms) = m.get_one::<PathBuf>("te-hmms") {
         config.te_hmms = Some(hmms.clone());
     }

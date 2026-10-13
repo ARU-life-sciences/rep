@@ -567,6 +567,14 @@ fn write_groups(
             }
         }
         let labelled: usize = labels.values().sum();
+        // members already explained as simple, satellite or host sequence
+        let non_te = ids
+            .iter()
+            .filter(|&&i| {
+                let m = &members[i];
+                is_non_te(&m.label) || is_non_te(&m.original_label)
+            })
+            .count();
         let mut hallmarks: BTreeMap<&str, usize> = BTreeMap::new();
         for &i in ids {
             for h in &members[i].hallmarks {
@@ -575,7 +583,8 @@ fn write_groups(
         }
         let genome_bp: u64 = ids.iter().map(|&i| members[i].genome_bp).sum();
         let frac = |h: &str| hallmarks.get(h).copied().unwrap_or(0) as f64 / ids.len() as f64;
-        let novel = labelled == 0;
+        // a novel class has no TE-labelled member and is not mostly non-TE
+        let novel = labelled == 0 && non_te * 2 < ids.len();
         // breadth across species dominates, then abundance and TE hallmarks;
         // only meaningful for novel groups
         let score = 2.0 * (1.0 + species.len() as f64).ln()
@@ -596,7 +605,7 @@ fn write_groups(
         let mut line = String::new();
         write!(
             line,
-            "m{g}\t{}\t{}\t{}\t{}\t{}\t{labelled}\t{}\t{}\t{genome_bp}\t{novel}\t{score:.3}\t{}",
+            "m{g}\t{}\t{}\t{}\t{}\t{}\t{labelled}\t{}\t{non_te}\t{}\t{genome_bp}\t{novel}\t{score:.3}\t{}",
             ids.len(),
             species.len(),
             clusters.len(),
@@ -625,7 +634,7 @@ fn write_groups(
     let mut out = BufWriter::new(fs::File::create(c.output_dir.join("groups.tsv"))?);
     writeln!(
         out,
-        "group\tmembers\tspecies\tfamily_clusters\ttaxa\ttaxon_list\tlabelled\tlabels\thallmarks\tgenome_bp\tnovel\tnovelty_score\texamples"
+        "group\tmembers\tspecies\tfamily_clusters\ttaxa\ttaxon_list\tlabelled\tlabels\tnon_te\thallmarks\tgenome_bp\tnovel\tnovelty_score\texamples"
     )?;
     for (_, _, line, _) in &rows {
         writeln!(out, "{line}")?;
@@ -775,12 +784,29 @@ mod tests {
                     "Unknown",
                     "medium",
                 ),
+                (
+                    "h1#Simple_repeat",
+                    "Simple_repeat",
+                    "simple_repeat",
+                    "Simple_repeat",
+                    "medium",
+                ),
+                ("h2#Unknown", "Unknown", "unresolved", "Unknown", "low"),
             ],
         );
-        // members: 0..2 sp_a, 3..5 sp_b. Family clusters: {0,1,2,3} and {4}, {5}.
-        // Proteins link 4 and 5 into one group.
+        // members: 0..2 sp_a, 3..7 sp_b. Family clusters: {0,1,2,3}, {4}, {5}
+        // and {6,7}, half simple repeat (not novel). Proteins link 4 and 5.
         let runner = FakeMmseqs {
-            nucl: vec![(0, 0), (0, 1), (0, 2), (0, 3), (4, 4), (5, 5)],
+            nucl: vec![
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (0, 3),
+                (4, 4),
+                (5, 5),
+                (6, 6),
+                (6, 7),
+            ],
             prot: vec![
                 ("m4_o0".into(), "m4_o0".into()),
                 ("m4_o0".into(), "m5_o0".into()),
@@ -788,8 +814,8 @@ mod tests {
         };
         let config = DiscoverConfig::new(results, dir.path().join("out"));
         let s = run_discover(&config, &runner).unwrap();
-        assert_eq!((s.samples, s.members, s.labelled_members), (2, 6, 2));
-        assert_eq!((s.family_clusters, s.groups), (3, 2));
+        assert_eq!((s.samples, s.members, s.labelled_members), (2, 8, 2));
+        assert_eq!((s.family_clusters, s.groups), (4, 3));
         assert_eq!(
             s.propagated_from_family_cluster, 2,
             "f3 and g1 inherit LINE"
@@ -808,6 +834,9 @@ mod tests {
         let first = groups.lines().nth(1).unwrap();
         assert!(first.starts_with("m4\t2\t1\t2\t"), "{first}");
         assert!(first.contains("\ttrue\t"));
+        assert!(groups
+            .lines()
+            .any(|l| l.starts_with("m6\t2\t") && l.contains("\t1\t\t") && l.contains("\tfalse\t")));
     }
 
     #[test]

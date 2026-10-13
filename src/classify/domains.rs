@@ -133,6 +133,88 @@ pub fn role_of(domain: &str) -> Option<Role> {
         .map(|&(_, role)| role)
 }
 
+/// Pfam families that occur in transposons as well as host genes (DNA-binding
+/// motifs, zinc fingers, accessory domains of TE proteins). They neither mark
+/// a TE nor a host gene, so the host-gene scan ignores them.
+const AMBIGUOUS_PREFIXES: &[&str] = &[
+    "zf-",
+    "HTH_",
+    "DDE_",
+    "Transposase",
+    "Tnp",
+    "Dimer_Tnp",
+    "DBD_Tnp",
+    "RVT",
+    "RVP",
+    "Retrotrans",
+    "rve",
+    "Phage_",
+    "DUF",
+    "Herpes_",
+    "UBN2",
+    "Myb_",
+    "CENP",
+    "Chromo",
+    "Exo_endo",
+    "DNA_pol",
+    "Helicase",
+    "Peptidase_A",
+    "RNase_H",
+    "SWIM",
+    "THAP",
+    "MULE",
+    "Gag",
+    "gag",
+    "Integrase",
+    "Endonuclease",
+    "PIF1",
+    "AAA",
+    "Rep_",
+    "Ribonuc",
+    "Mu-",
+    "Tc5",
+    "Tc3",
+    "YqaJ",
+];
+
+/// Whether a Pfam family can belong to a TE (see [`AMBIGUOUS_PREFIXES`]).
+pub fn is_te_associated(domain: &str) -> bool {
+    role_of(domain).is_some() || AMBIGUOUS_PREFIXES.iter().any(|p| domain.starts_with(p))
+}
+
+/// Host-gene domains per family from an `hmmsearch --domtblout` of full Pfam
+/// on consensus ORFs: Pfam families that are not TE-associated, with the
+/// best domain score of each, strongest first.
+pub fn parse_host_domains(path: &Path) -> Result<BTreeMap<String, Vec<(String, f64)>>> {
+    let mut best: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
+    for line in BufReader::new(fs::File::open(path)?).lines() {
+        let line = line?;
+        let f = line.split_whitespace().collect::<Vec<_>>();
+        if line.starts_with('#') || f.len() < 22 || is_te_associated(f[3]) {
+            continue;
+        }
+        // hmmsearch: target is the ORF `<family>|orf<n>|<coords>`, query the domain
+        let Some(family) = f[0].rsplitn(3, '|').nth(2) else {
+            continue;
+        };
+        let score: f64 = f[13].parse()?;
+        let e = best
+            .entry(family.to_owned())
+            .or_default()
+            .entry(f[3].to_owned())
+            .or_insert(score);
+        *e = e.max(score);
+    }
+    Ok(best
+        .into_iter()
+        .map(|(family, domains)| {
+            let mut v = domains.into_iter().collect::<Vec<_>>();
+            v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            (family, v)
+        })
+        .collect())
+}
+
 /// Copy the TE domain models out of a full Pfam-A.hmm. Returns the names
 /// missing from that Pfam release.
 pub fn extract_te_models(pfam: &Path, out: &Path) -> Result<Vec<String>> {
@@ -569,5 +651,31 @@ mod tests {
         assert_eq!((hits[0].coding_start, hits[0].coding_end), (1000, 1300));
         assert_eq!(hits[1].coding_start, 1000 + 3 * 149);
         assert_eq!(hits[0].family_id, "fam#Unknown");
+    }
+
+    #[test]
+    fn host_domains_skip_te_associated_families() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("host.domtblout");
+        let row = |orf: &str, dom: &str, score: f64| {
+            format!("{orf} - 300 {dom} PF0 200 1e-30 {score} 0.1 1 1 1e-30 1e-30 {score} 0.1 1 200 1 200 1 200 0.9 -\n")
+        };
+        fs::write(
+            &p,
+            [
+                "# comment\n".to_owned(),
+                row("f#Unknown|orf1|+:0-900", "Actin", 250.0),
+                row("f#Unknown|orf2|-:0-900", "Actin", 300.0),
+                row("f#Unknown|orf1|+:0-900", "zf-C2H2", 40.0),
+                row("f#Unknown|orf1|+:0-900", "RVT_1", 90.0),
+                row("g#Unknown|orf1|+:0-900", "7tm_1", 80.0),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let host = parse_host_domains(&p).unwrap();
+        assert_eq!(host["f#Unknown"], vec![("Actin".to_owned(), 300.0)]);
+        assert_eq!(host["g#Unknown"], vec![("7tm_1".to_owned(), 80.0)]);
+        assert!(is_te_associated("DDE_Tnp_1") && !is_te_associated("Ribosomal_S2"));
     }
 }
