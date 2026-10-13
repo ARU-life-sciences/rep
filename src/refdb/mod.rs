@@ -19,12 +19,16 @@ mod embl;
 mod fetch;
 mod hmms;
 mod labels;
+mod mosaics;
 
 pub use embl::{parse_embl, EmblEntry};
 pub use fetch::{fetch, register_source, FetchOptions};
 pub use fetch::{DFAM_CURRENT_URL, REPBASE_ARCHIVE_URL, REPBASE_MANIFEST_URL};
 pub use hmms::{build_te_hmms, build_te_hmms_from, HmmBuildInfo, HmmBuildOptions};
 pub use labels::repbase_label;
+pub use mosaics::{
+    find_mosaics, foreign_class, mosaics_from_hits, read_mosaics, Mosaic, MosaicInfo, MosaicOptions,
+};
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -766,6 +770,32 @@ pub fn status_report(db: &RefDb) -> Result<String> {
             )
         }
         (None, _) => writeln!(text, "  profile HMMs   none (run `rep refdb hmms`)"),
+    }
+    .ok();
+    let mosaics = fs::read(db.build_dir().join("mosaics.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<MosaicInfo>(&b).ok());
+    match (mosaics, &manifest.last_build) {
+        (Some(m), build) => {
+            let stale = build
+                .as_ref()
+                .is_some_and(|b| b.fingerprint != m.source_fingerprint);
+            writeln!(
+                text,
+                "  mosaics        {} segments in {} references{}",
+                m.segments,
+                m.mosaic_references,
+                if stale {
+                    " (stale: rerun `rep refdb mosaics`)"
+                } else {
+                    ""
+                }
+            )
+        }
+        (None, _) => writeln!(
+            text,
+            "  mosaics        not searched (run `rep refdb mosaics`)"
+        ),
     }
     .ok();
     Ok(text)

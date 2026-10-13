@@ -48,6 +48,8 @@ pub struct ClassifyConfig {
     pub pfam: Option<PathBuf>,
     /// Pressed superfamily profile HMMs (`rep refdb hmms`), named `<model>#<label>`.
     pub te_hmms: Option<PathBuf>,
+    /// Foreign segments of nucleotide references (`rep refdb mosaics`).
+    pub mosaics: Option<PathBuf>,
     /// Scan ORFs of families without TE protein evidence against all of
     /// `pfam` to recognise multicopy host genes.
     pub host_domains: bool,
@@ -81,6 +83,7 @@ impl ClassifyConfig {
             index_dir: None,
             pfam: None,
             te_hmms: None,
+            mosaics: None,
             host_domains: false,
             copies_dir: None,
             rm_out: None,
@@ -106,6 +109,9 @@ impl ClassifyConfig {
         config.index_dir = Some(db.build_dir().join("index"));
         if db.te_hmms().is_file() {
             config.te_hmms = Some(db.te_hmms());
+        }
+        if db.mosaics().is_file() {
+            config.mosaics = Some(db.mosaics());
         }
         config
     }
@@ -259,6 +265,32 @@ pub fn run_classify_with_runner(
             nucl_hits = search_library(c, &queries, nucleotides, true, runner, &mut commands)?;
         }
     }
+    // hits inside an element embedded in a reference of another class
+    let mut embedded: HashMap<String, (f64, String)> = HashMap::new();
+    if let Some(path) = &c.mosaics {
+        let mosaics = crate::refdb::read_mosaics(path)?;
+        for hit in &mut nucl_hits {
+            let Some(m) = crate::refdb::foreign_class(
+                &mosaics,
+                &hit.subject_id,
+                hit.subject_start,
+                hit.subject_end,
+            ) else {
+                continue;
+            };
+            let note = format!(
+                "nucleotide_hit_in_embedded:{}@{}:{}-{}",
+                m.class, hit.subject_id, m.start, m.end
+            );
+            hit.class = Some(m.class.clone());
+            let best = embedded
+                .entry(hit.query_id.clone())
+                .or_insert((0.0, String::new()));
+            if hit.bitscore > best.0 {
+                *best = (hit.bitscore, note);
+            }
+        }
+    }
     let group = |hits: &'_ [ProteinHit]| {
         let mut by_family: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for (i, hit) in hits.iter().enumerate() {
@@ -396,6 +428,9 @@ pub fn run_classify_with_runner(
         }
         if let Some(host) = host_by_family.get(&family.id) {
             disposition = apply_host_domains(disposition, host, &structure, copies.as_ref());
+        }
+        if let Some((_, note)) = embedded.get(&family.id) {
+            disposition.evidence.push(note.clone());
         }
         let te_coding_evidence = homology.classes.iter().any(|c| !is_non_te(&c.class))
             || domains.inferred.is_some()
@@ -1280,5 +1315,39 @@ mod tests {
             c.required_tools(),
             vec!["blastx", "blastn", "hmmscan", "hmmpress", "hmmsearch"]
         );
+    }
+
+    #[test]
+    fn hits_in_embedded_elements_take_the_embedded_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("lib.fa");
+        fs::write(&lib, format!(">hel#Unknown\n{}\n", random(400, 31))).unwrap();
+        let nucl = dir.path().join("te_nucl.fa");
+        fs::write(&nucl, ">KolobokE-1#DNA/Kolobok\nACGT\n").unwrap();
+        let mosaics = dir.path().join("mosaics.tsv");
+        fs::write(
+            &mosaics,
+            "reference\tstart\tend\tclass\tsupport\texample\n\
+             KolobokE-1#DNA/Kolobok\t5363\t5559\tRC/Helitron\t2\tHel-1#RC/Helitron\n",
+        )
+        .unwrap();
+        let runner = MockRunner {
+            hits: String::new(),
+            nucl_hits: "hel#Unknown\tKolobokE-1#DNA/Kolobok\t400\t5826\t85.0\t190\t\
+                        101\t290\t5370\t5559\t1e-40\t250\n"
+                .into(),
+        };
+        let mut config = ClassifyConfig::new(lib, PathBuf::new(), dir.path().join("out"));
+        config.proteins = None;
+        config.nucleotides = Some(nucl);
+        let plain = run_classify_with_runner(&config, &runner).unwrap();
+        assert_eq!(plain.families[0].disposition.label, "DNA/Kolobok");
+        config.mosaics = Some(mosaics);
+        let fixed = run_classify_with_runner(&config, &runner).unwrap();
+        let d = &fixed.families[0].disposition;
+        assert_eq!(d.label, "RC/Helitron");
+        assert!(d.evidence.iter().any(
+            |e| e == "nucleotide_hit_in_embedded:RC/Helitron@KolobokE-1#DNA/Kolobok:5363-5559"
+        ));
     }
 }

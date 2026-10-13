@@ -617,6 +617,17 @@ fn refdb_command() -> clap::Command {
                 ),
         )
         .subcommand(
+            Command::new("mosaics")
+                .about("Find references carrying an embedded element of another class (build/mosaics.tsv)")
+                .arg(db())
+                .arg(
+                    Arg::new("threads")
+                        .long("threads")
+                        .default_value("1")
+                        .value_parser(value_parser!(usize)),
+                ),
+        )
+        .subcommand(
             Command::new("status")
                 .about("Show sources, local layer and build")
                 .arg(db()),
@@ -686,6 +697,17 @@ pub fn run_refdb() -> Result<()> {
             eprintln!(
                 "Added {} local record(s), {} already present",
                 summary.added, summary.unchanged
+            );
+        }
+        "mosaics" => {
+            let options = refdb::MosaicOptions {
+                threads: *sub.get_one::<usize>("threads").expect("defaulted"),
+                ..Default::default()
+            };
+            let info = refdb::find_mosaics(&db, &options, &runner)?;
+            eprintln!(
+                "{} of {} references carry {} embedded segment(s): {:?}",
+                info.mosaic_references, info.references, info.segments, info.by_pair
             );
         }
         "hmms" => {
