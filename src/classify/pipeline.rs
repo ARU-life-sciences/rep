@@ -110,6 +110,27 @@ impl ClassifyConfig {
         config
     }
 
+    /// External programs this configuration will run.
+    pub fn required_tools(&self) -> Vec<&'static str> {
+        let mut tools = Vec::new();
+        if self.proteins.is_some() {
+            tools.push(match self.backend {
+                HomologyBackend::Blastx => "blastx",
+                HomologyBackend::Diamond => "diamond",
+            });
+        }
+        if self.nucleotides.is_some() {
+            tools.push("blastn");
+        }
+        if self.pfam.is_some() {
+            tools.extend(["hmmscan", "hmmpress"]);
+        }
+        if self.te_hmms.is_some() || (self.host_domains && self.pfam.is_some()) {
+            tools.push("hmmsearch");
+        }
+        tools
+    }
+
     pub fn validate(&self) -> std::result::Result<(), String> {
         if self.threads == 0 {
             return Err("threads must be greater than zero".into());
@@ -175,7 +196,33 @@ pub struct ClassifyResult {
 }
 
 pub fn run_classify(c: &ClassifyConfig) -> Result<ClassifyResult> {
+    c.validate().map_err(cli_error)?;
+    // fail now rather than after hours of searching
+    let missing = c
+        .required_tools()
+        .into_iter()
+        .filter(|t| find_executable(t).is_none())
+        .map(|t| format!("{t} (set REP_{} or add it to PATH)", t.to_uppercase()))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(cli_error(format!(
+            "required programs not found: {}",
+            missing.join(", ")
+        )));
+    }
     run_classify_with_runner(c, &crate::RealCommandRunner)
+}
+
+/// Resolve an external program as [`crate::copy_recovery::executable`]
+/// would run it: a path, or a name looked up on `PATH`.
+fn find_executable(name: &str) -> Option<PathBuf> {
+    let exe = crate::copy_recovery::executable(name);
+    if exe.components().count() > 1 {
+        return exe.is_file().then_some(exe);
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(&exe))
+        .find(|p| p.is_file())
 }
 
 pub fn run_classify_with_runner(
@@ -1220,5 +1267,18 @@ mod tests {
             (5, 205, 450)
         );
         assert_eq!(h.bitscore, 99.0);
+    }
+
+    #[test]
+    fn required_tools_follow_the_configuration() {
+        let mut c = ClassifyConfig::new(PathBuf::new(), PathBuf::new(), PathBuf::new());
+        c.nucleotides = Some(PathBuf::new());
+        assert_eq!(c.required_tools(), vec!["blastx", "blastn"]);
+        c.te_hmms = Some(PathBuf::new());
+        c.pfam = Some(PathBuf::new());
+        assert_eq!(
+            c.required_tools(),
+            vec!["blastx", "blastn", "hmmscan", "hmmpress", "hmmsearch"]
+        );
     }
 }
