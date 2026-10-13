@@ -19,6 +19,7 @@ use super::{
         extract_te_models, hmmpress_command, hmmscan_command, interpret, parse_domtblout,
         parse_host_domains, DomainEvidence, DomainHit, TE_DOMAINS,
     },
+    features,
     homology::{
         blastn_library_command, blastx_command, diamond_blastx_command, diamond_makedb_command,
         makeblastdb_nucleotide_command, makeblastdb_protein_command, parse_protein_hits, summarise,
@@ -388,6 +389,7 @@ pub fn run_classify_with_runner(
     };
 
     let mut families = Vec::new();
+    let mut feature_rows = vec![features::header()];
     for (family, structure) in selected.iter().zip(structures) {
         let homology = summarise(
             &family_hits(&hits, &hits_by_family, &family.id),
@@ -448,6 +450,28 @@ pub fn run_classify_with_runner(
                     "disagree".to_owned()
                 }
             });
+        // features for a learned classifier: protein sources kept apart
+        let (hmm_hits, blastx_hits): (Vec<&ProteinHit>, Vec<&ProteinHit>) =
+            family_hits(&hits, &hits_by_family, &family.id)
+                .into_iter()
+                .partition(|h| h.subject_id.starts_with("hmm_"));
+        feature_rows.push(features::row(&features::FeatureInputs {
+            family_id: &family.id,
+            original_label: family.label.as_deref().unwrap_or(""),
+            label: &disposition.label,
+            disposition: disposition.kind.as_str(),
+            confidence: disposition.confidence.as_str(),
+            blastx: &summarise(&blastx_hits, c.thresholds.min_bitscore),
+            hmm: &summarise(&hmm_hits, c.thresholds.min_bitscore),
+            nucleotide: &nucleotide_homology,
+            domains: &domains,
+            structure: &structure,
+            copies: copies.as_ref(),
+            host_domains: host_by_family
+                .get(&family.id)
+                .map_or(&[][..], Vec::as_slice),
+            embedded_hit: embedded.contains_key(&family.id),
+        }));
         families.push(FamilyClassification {
             family_id: family.id.clone(),
             name: family.name.clone(),
@@ -464,6 +488,8 @@ pub fn run_classify_with_runner(
 
     hits.append(&mut nucl_hits);
     write_outputs(c, &library, &families, &hits)?;
+    feature_rows.push(String::new());
+    fs::write(c.output_dir.join("features.tsv"), feature_rows.join("\n"))?;
     let summary = summarise_run(&library, &families, &hits, commands);
     fs::write(
         c.output_dir.join("summary.json"),
@@ -1349,5 +1375,22 @@ mod tests {
         assert!(d.evidence.iter().any(
             |e| e == "nucleotide_hit_in_embedded:RC/Helitron@KolobokE-1#DNA/Kolobok:5363-5559"
         ));
+        // one feature row per family, aligned with the header
+        let table = fs::read_to_string(dir.path().join("out/features.tsv")).unwrap();
+        let rows = table
+            .lines()
+            .map(|l| l.split('\t').collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].len(), rows[1].len());
+        let col = |name: &str| rows[1][rows[0].iter().position(|h| *h == name).unwrap()];
+        assert_eq!(col("family_id"), "hel#Unknown");
+        assert_eq!(col("label"), "RC/Helitron");
+        assert_eq!(col("nucl_embedded_hit"), "1");
+        assert_eq!(col("nucl_bits_RC"), "250");
+        assert_eq!(col("nucl_bits_DNA"), "0");
+        assert_eq!(col("has_copies"), "0");
+        assert_eq!(col("tsd_length"), "");
+        assert_eq!(col("length"), "400");
     }
 }

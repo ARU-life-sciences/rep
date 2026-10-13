@@ -75,7 +75,15 @@ The plan is to keep every evidence module and replace the cascade with one score
 5. **Rollout.** Run beside the rule cascade on held-out species (`--model`), compare per class,
    and switch the default only where it is better.
 
-- [ ] M8a feature table (`features.tsv`) from `classify`
+- [x] M8a feature table (`features.tsv`, schema `rep.features.v1`) from every `classify` run: 105 columns.
+      Targets and current call (original label, label, disposition, confidence); per class
+      (DNA, RC, LTR, LINE, SINE, PLE, Retroposon) BLASTX bits/coverage, profile-HMM bits, BLASTN
+      bits/coverage/identity (plus nonTE); mosaic and chimera flags; domain-implied class and 15 domain
+      roles; host-gene domains; structure (length, GC, LTR, TIR, tails, tandem, ORFs, termini); copies
+      (loci, full-length, identity, genome bp, TSD length/support/null, flank similarity, Helitron ends).
+- [ ] Training data: a v4 batch over the 559 libraries (`--rm-out`, `--host-domains`, mosaics, HMMs)
+      writes `features.tsv` per library; plus the curated refdb consensi run through classify
+      with themselves held out.
 - [ ] M8b offline fit and held-out evaluation against the rule cascade
 - [ ] M8c weights in the refdb; `rep classify --model`
 - [ ] M8d default switch per class once it beats the cascade

@@ -9,6 +9,7 @@
 mod copies;
 mod decide;
 mod domains;
+mod features;
 mod homology;
 mod library;
 mod pipeline;
@@ -25,6 +26,7 @@ pub use domains::{
     extract_te_models, hmmscan_command, interpret, is_te_associated, parse_domtblout,
     parse_host_domains, role_of, DomainEvidence, DomainHit, Role, TE_DOMAINS,
 };
+pub use features::{FEATURES_SCHEMA, FEATURE_CLASSES};
 pub use homology::{
     blastn_library_command, blastx_command, diamond_blastx_command, diamond_makedb_command,
     makeblastdb_nucleotide_command, makeblastdb_protein_command, parse_protein_hits, summarise,
