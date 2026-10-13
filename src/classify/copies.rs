@@ -67,6 +67,8 @@ pub struct CopyEvidence {
     pub flank_similarity: Option<f64>,
     /// Genomic base pairs annotated as this family (RepeatMasker input only).
     pub genome_bp: u64,
+    /// Helitron end and insertion-site signature on the copies.
+    pub helitron_ends: Option<HelitronEnds>,
 }
 
 /// Read copy evidence for one family from its copy-recovery directory.
@@ -112,6 +114,7 @@ pub fn read_copy_evidence(dir: &Path, params: &CopyParams) -> Result<Option<Copy
         .filter(|c| full.contains_key(&c.locus_id))
         .collect::<Vec<_>>();
     evidence.tsd = call_tsd(&complete, params);
+    evidence.helitron_ends = helitron_ends(&complete);
     evidence.flank_similarity = flank_similarity(&copies, params.flank_window);
     Ok(Some(evidence))
 }
@@ -287,6 +290,79 @@ pub fn call_tsd(copies: &[&OrientedCopy], p: &CopyParams) -> Option<Tsd> {
         null_support,
         motif,
         copies_evaluated: usable.len(),
+    })
+}
+
+/// Helitron insertion signature on genomic copies: the element starts with
+/// TC and ends with CTRR, and sits between a host A and a host T without a
+/// TSD (on the other strand: A|YYAG ... GA|T). Consensus ends are often a few
+/// bases off, so each end is searched within a window and the best offset
+/// kept; the same search far into the flanks gives the chance expectation.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct HelitronEnds {
+    /// Fraction of copies showing the signature at both ends.
+    pub support: f64,
+    /// The same, searched 30 bp into the flanks.
+    pub null_support: f64,
+    pub copies: usize,
+}
+
+/// Bases searched on either side of each consensus end.
+const END_WINDOW: isize = 8;
+/// Shift into the flanks for the null search.
+const END_NULL_SHIFT: isize = 30;
+
+fn matches(seq: &[u8], at: isize, pattern: &[u8]) -> bool {
+    let Ok(at) = usize::try_from(at) else {
+        return false;
+    };
+    seq.get(at..at + pattern.len()).is_some_and(|s| {
+        s.iter().zip(pattern).all(|(b, p)| match p {
+            b'R' => matches!(b, b'A' | b'G'),
+            b'Y' => matches!(b, b'C' | b'T'),
+            _ => b == p,
+        })
+    })
+}
+
+/// Fraction of copies with `five` at the best 5' offset and `three` (ending
+/// at the boundary) at the best 3' offset, with ends moved `shift` outward.
+fn end_support(copies: &[&OrientedCopy], five: &[u8], three: &[u8], shift: isize) -> f64 {
+    let at5 = |c: &OrientedCopy, k: isize| c.left as isize - shift + k;
+    let at3 = |c: &OrientedCopy, k: isize| c.core_end() as isize + shift + k;
+    let best = |hit: &dyn Fn(&OrientedCopy, isize) -> bool| {
+        (-END_WINDOW..=END_WINDOW)
+            .max_by_key(|&k| (copies.iter().filter(|c| hit(c, k)).count(), -k.abs()))
+            .expect("non-empty window")
+    };
+    // `five` starts one host base before the element; `three` ends one after
+    let hit5 = |c: &OrientedCopy, k: isize| matches(&c.seq, at5(c, k) - 1, five);
+    let hit3 =
+        |c: &OrientedCopy, k: isize| matches(&c.seq, at3(c, k) - three.len() as isize + 1, three);
+    let (k5, k3) = (best(&hit5), best(&hit3));
+    copies.iter().filter(|c| hit5(c, k5) && hit3(c, k3)).count() as f64 / copies.len() as f64
+}
+
+/// Helitron end signature on full-length copies (≥5 needed).
+pub fn helitron_ends(copies: &[&OrientedCopy]) -> Option<HelitronEnds> {
+    let reach = (END_NULL_SHIFT + END_WINDOW + 6) as usize;
+    let usable = copies
+        .iter()
+        .copied()
+        .filter(|c| c.left >= reach && c.right >= reach && c.core_end() - c.left >= 24)
+        .collect::<Vec<_>>();
+    if usable.len() < 5 {
+        return None;
+    }
+    // A|TC ... CTRR|T, or on the other strand A|YYAG ... GA|T
+    let support = |shift| {
+        end_support(&usable, b"ATC", b"CTRRT", shift)
+            .max(end_support(&usable, b"AYYAG", b"GAT", shift))
+    };
+    Some(HelitronEnds {
+        support: support(0),
+        null_support: support(END_NULL_SHIFT),
+        copies: usable.len(),
     })
 }
 
@@ -498,6 +574,65 @@ mod tests {
             read_copy_evidence(&d.join("missing"), &CopyParams::default())
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn helitron_ends_need_termini_and_host_a_t() {
+        let mut x = 99u64;
+        let mut rnd = |n: usize| {
+            (0..n)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    b"ACGT"[(x >> 33) as usize % 4]
+                })
+                .collect::<Vec<u8>>()
+        };
+        let body = rnd(80);
+        let mut make = |element: &[u8], host: (u8, u8), reverse: bool| {
+            (0..8)
+                .map(|i| {
+                    let (mut left, mut right) = (rnd(70), rnd(70));
+                    left[69] = host.0;
+                    right[0] = host.1;
+                    let mut seq = [left, element.to_vec(), right].concat();
+                    if reverse {
+                        seq = bio::alphabets::dna::revcomp(&seq);
+                    }
+                    OrientedCopy {
+                        locus_id: format!("c{i}"),
+                        seq,
+                        // the consensus misses the first two and last three bases
+                        left: 72,
+                        right: 73,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let helitron = [b"TCTA".as_slice(), &body, b"GGCTAG"].concat();
+        for reverse in [false, true] {
+            let copies = make(&helitron, (b'A', b'T'), reverse);
+            let e = helitron_ends(&copies.iter().collect::<Vec<_>>()).unwrap();
+            assert_eq!(e.support, 1.0, "reverse={reverse}");
+            assert!(e.null_support < 0.3);
+        }
+        // the same element between other host bases, or a DNA transposon end
+        let copies = make(&helitron, (b'G', b'C'), false);
+        assert!(
+            helitron_ends(&copies.iter().collect::<Vec<_>>())
+                .unwrap()
+                .support
+                < 0.3
+        );
+        let tir = [b"CAGTGG".as_slice(), &body, b"CCACTG"].concat();
+        let copies = make(&tir, (b'A', b'T'), false);
+        assert!(
+            helitron_ends(&copies.iter().collect::<Vec<_>>())
+                .unwrap()
+                .support
+                < 0.3
         );
     }
 }

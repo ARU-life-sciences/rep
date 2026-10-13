@@ -17,7 +17,9 @@ use std::{
 
 use bio::{alphabets::dna, io::fasta};
 
-use super::copies::{call_tsd, flank_similarity, CopyEvidence, CopyParams, OrientedCopy};
+use super::copies::{
+    call_tsd, flank_similarity, helitron_ends, CopyEvidence, CopyParams, OrientedCopy,
+};
 use crate::{Error, ErrorKind, Result};
 
 /// One line of a RepeatMasker `.out` file.
@@ -118,7 +120,8 @@ struct Insertion<'a> {
 }
 
 /// Flank length cut from the genome on each side, and core bases kept at each end.
-const FLANK: u64 = 60;
+/// Flanks leave room for the TSD null after extending copies to the consensus ends.
+const FLANK: u64 = 70;
 const CORE_END: u64 = 30;
 /// Most full-length copies used for TSD and flank analysis per family.
 const MAX_COPIES: usize = 100;
@@ -180,6 +183,7 @@ pub fn copy_evidence_from_rm(
         tsd: None,
         flank_similarity: None,
         genome_bp: hits.iter().map(|h| h.end - h.start).sum(),
+        helitron_ends: None,
     };
 
     if let Some(genome) = genome {
@@ -197,6 +201,15 @@ pub fn copy_evidence_from_rm(
                 ins.hits.iter().map(|h| h.start).min().unwrap_or(0),
                 ins.hits.iter().map(|h| h.end).max().unwrap_or(0),
             );
+            // extend to the consensus ends, so that all copies align at both
+            let missing_start = ins.hits.iter().map(|h| h.rep_start).min().unwrap_or(1) - 1;
+            let missing_end =
+                len.saturating_sub(ins.hits.iter().map(|h| h.rep_end).max().unwrap_or(len));
+            let (start, end) = if minus {
+                (start.saturating_sub(missing_end), end + missing_start)
+            } else {
+                (start.saturating_sub(missing_start), end + missing_end)
+            };
             if let Some(copy) = cut_copy(genome, &first.contig, start, end, minus) {
                 copies.push(copy);
             }
@@ -206,6 +219,7 @@ pub fn copy_evidence_from_rm(
         }
         let refs = copies.iter().collect::<Vec<_>>();
         evidence.tsd = call_tsd(&refs, params);
+        evidence.helitron_ends = helitron_ends(&refs);
         evidence.flank_similarity = flank_similarity(&copies, params.flank_window);
     }
     evidence

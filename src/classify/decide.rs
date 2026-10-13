@@ -979,6 +979,7 @@ mod tests {
             }),
             flank_similarity: Some(flanks),
             genome_bp: 0,
+            helitron_ends: None,
         }
     }
 
@@ -1197,7 +1198,9 @@ mod tests {
             (d.kind, d.label.as_str()),
             (DispositionKind::HostOrArtefact, HOST_GENE_LABEL)
         );
-        assert!(d.evidence.contains(&"host_gene_domains:Actin,7tm_1".to_owned()));
+        assert!(d
+            .evidence
+            .contains(&"host_gene_domains:Actin,7tm_1".to_owned()));
         // terminal inverted repeats point to a TE that captured the gene
         let mut tir = plain.clone();
         tir.tir = Some(TerminalRepeat {
@@ -1207,7 +1210,11 @@ mod tests {
             three_prime_offset: 0,
         });
         let d = apply_host_domains(
-            disposition(DispositionKind::NovelCandidate, "DNA/Unknown", Confidence::Low),
+            disposition(
+                DispositionKind::NovelCandidate,
+                "DNA/Unknown",
+                Confidence::Low,
+            ),
             &host,
             &tir,
             None,

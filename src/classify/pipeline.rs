@@ -803,7 +803,7 @@ fn write_outputs(
          best_class\tbest_subject\tbest_bitscore\tclass_coverage\tchimeric_classes\t\
          nucl_best_class\tnucl_best_subject\tnucl_bitscore\tnucl_coverage\tnucl_identity\tnucl_chimeric_classes\t\
          domain_architecture\tdomain_class\tdomain_novelty\t\
-         copy_loci\tcopy_full_length\tcopy_identity\tgenome_bp\ttsd_length\ttsd_motif\ttsd_support\tflank_similarity\t\
+         copy_loci\tcopy_full_length\tcopy_identity\tgenome_bp\ttsd_length\ttsd_motif\ttsd_support\tflank_similarity\thelitron_ends\thelitron_ends_null\t\
          ltr_length\tltr_identity\ttir_length\ttir_identity\ttail\ttandem_period\t\
          tandem_identity\tlongest_orf_aa\tn_orfs\tgc\tevidence\twarnings\n",
     );
@@ -814,7 +814,7 @@ fn write_outputs(
         let opt = |v: Option<String>| v.unwrap_or_default();
         writeln!(
             tsv,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
             f.family_id,
             f.original_label.as_deref().unwrap_or(""),
             s.length,
@@ -844,6 +844,8 @@ fn write_outputs(
             opt(f.copies.as_ref().and_then(|c| c.tsd.as_ref()).map(|t| t.motif.clone())),
             opt(f.copies.as_ref().and_then(|c| c.tsd.as_ref()).map(|t| format!("{:.2}", t.support))),
             opt(f.copies.as_ref().and_then(|c| c.flank_similarity).map(|v| format!("{v:.2}"))),
+            opt(f.copies.as_ref().and_then(|c| c.helitron_ends.as_ref()).map(|h| format!("{:.2}", h.support))),
+            opt(f.copies.as_ref().and_then(|c| c.helitron_ends.as_ref()).map(|h| format!("{:.2}", h.null_support))),
             opt(s.ltr.as_ref().map(|r| r.length.to_string())),
             opt(s.ltr.as_ref().map(|r| format!("{:.3}", r.identity))),
             opt(s.tir.as_ref().map(|r| r.length.to_string())),
