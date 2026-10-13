@@ -11,7 +11,6 @@
 //! for comparison; they are not features.
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 
 use super::{
     copies::CopyEvidence,
@@ -73,7 +72,7 @@ fn role_code(role: Role) -> &'static str {
 }
 
 /// Feature group of a label: one of [`FEATURE_CLASSES`], `nonTE`, or none.
-fn group(label: &str) -> Option<&'static str> {
+pub(crate) fn group(label: &str) -> Option<&'static str> {
     if is_non_te(label) {
         return Some("nonTE");
     }
@@ -100,17 +99,9 @@ fn by_class(summary: &HomologySummary, class: &str) -> (f64, f64, f64) {
         })
 }
 
-pub fn header() -> String {
-    let mut h = vec![
-        "family_id",
-        "original_label",
-        "label",
-        "disposition",
-        "confidence",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
+/// Names of the numeric feature columns, in table order (after the ID columns).
+pub fn numeric_header() -> Vec<String> {
+    let mut h = Vec::new();
     for class in FEATURE_CLASSES {
         h.extend([
             format!("prot_bits_{class}"),
@@ -172,17 +163,95 @@ pub fn header() -> String {
         ]
         .map(str::to_owned),
     );
+    h
+}
+
+pub fn header() -> String {
+    let mut h = vec![
+        "family_id",
+        "original_label",
+        "label",
+        "disposition",
+        "confidence",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    h.extend(numeric_header());
     h.join("\t")
 }
 
+/// Numeric feature values in [`numeric_header`] order; `None` where a value does not apply.
+pub fn values(f: &FeatureInputs) -> Vec<Option<f64>> {
+    let flag = |b: bool| Some(if b { 1.0 } else { 0.0 });
+    let mut v = Vec::new();
+    for class in FEATURE_CLASSES {
+        let (bits, cov, _) = by_class(f.blastx, class);
+        let (hmm, _, _) = by_class(f.hmm, class);
+        v.extend([Some(bits), Some(cov), Some(hmm)]);
+    }
+    for class in FEATURE_CLASSES.iter().chain(&["nonTE"]) {
+        let (bits, cov, id) = by_class(f.nucleotide, class);
+        v.extend([Some(bits), Some(cov), Some(id)]);
+    }
+    v.extend([
+        Some(f.blastx.best_unclassified_bitscore),
+        flag(f.embedded_hit),
+        flag(!f.blastx.chimeric_classes.is_empty()),
+        flag(!f.nucleotide.chimeric_classes.is_empty()),
+    ]);
+    let inferred = f.domains.inferred.as_deref().and_then(group);
+    for class in FEATURE_CLASSES {
+        v.push(flag(inferred == Some(*class)));
+    }
+    v.push(flag(f.domains.novel.is_some()));
+    let roles = f
+        .domains
+        .hits
+        .iter()
+        .map(|h| role_code(h.role))
+        .collect::<BTreeSet<_>>();
+    v.extend(ROLES.iter().map(|r| flag(roles.contains(r))));
+
+    let s = f.structure;
+    let c = f.copies;
+    let tsd = c.and_then(|c| c.tsd.as_ref());
+    let hel = c.and_then(|c| c.helitron_ends.as_ref());
+    v.extend([
+        Some(f.host_domains.len() as f64),
+        Some(f.host_domains.iter().map(|(_, v)| *v).fold(0.0, f64::max)),
+        Some(s.length as f64),
+        Some(s.composition.gc),
+        s.ltr.as_ref().map(|r| r.length as f64),
+        s.ltr.as_ref().map(|r| r.identity),
+        s.tir.as_ref().map(|r| r.length as f64),
+        s.tir.as_ref().map(|r| r.identity),
+        flag(s.tail == Some(Tail::PolyA3)),
+        flag(s.tail == Some(Tail::PolyT5)),
+        s.tandem.as_ref().map(|t| t.period as f64),
+        s.tandem.as_ref().map(|t| t.identity),
+        s.tandem.as_ref().map(|t| t.copies),
+        Some(s.longest_orf_aa() as f64),
+        Some(s.orfs.len() as f64),
+        flag(s.tg_ca_termini),
+        flag(s.helitron_termini),
+        flag(c.is_some()),
+        c.map(|c| c.loci as f64),
+        c.map(|c| c.full_length as f64),
+        c.map(|c| c.mean_identity),
+        c.map(|c| c.genome_bp as f64),
+        tsd.map(|t| t.length as f64),
+        tsd.map(|t| t.support),
+        tsd.map(|t| t.null_support),
+        c.and_then(|c| c.flank_similarity),
+        hel.map(|h| h.support),
+        hel.map(|h| h.null_support),
+    ]);
+    v
+}
+
+/// One `features.tsv` line: the ID columns, then [`values`].
 pub fn row(f: &FeatureInputs) -> String {
-    let mut cols: Vec<String> = vec![
-        f.family_id.into(),
-        f.original_label.into(),
-        f.label.into(),
-        f.disposition.into(),
-        f.confidence.into(),
-    ];
     let num = |v: f64| {
         if v == 0.0 {
             "0".to_owned()
@@ -193,71 +262,17 @@ pub fn row(f: &FeatureInputs) -> String {
                 .to_owned()
         }
     };
-    let flag = |b: bool| if b { "1" } else { "0" }.to_owned();
-    let opt = |v: Option<f64>| v.map(num).unwrap_or_default();
-    for class in FEATURE_CLASSES {
-        let (bits, cov, _) = by_class(f.blastx, class);
-        let (hmm, _, _) = by_class(f.hmm, class);
-        cols.extend([num(bits), num(cov), num(hmm)]);
-    }
-    for class in FEATURE_CLASSES.iter().chain(&["nonTE"]) {
-        let (bits, cov, id) = by_class(f.nucleotide, class);
-        cols.extend([num(bits), num(cov), num(id)]);
-    }
-    cols.extend([
-        num(f.blastx.best_unclassified_bitscore),
-        flag(f.embedded_hit),
-        flag(!f.blastx.chimeric_classes.is_empty()),
-        flag(!f.nucleotide.chimeric_classes.is_empty()),
-    ]);
-    let inferred = f.domains.inferred.as_deref().and_then(group);
-    for class in FEATURE_CLASSES {
-        cols.push(flag(inferred == Some(*class)));
-    }
-    cols.push(flag(f.domains.novel.is_some()));
-    let roles = f
-        .domains
-        .hits
-        .iter()
-        .map(|h| role_code(h.role))
-        .collect::<BTreeSet<_>>();
-    cols.extend(ROLES.iter().map(|r| flag(roles.contains(r))));
-
-    let s = f.structure;
-    let c = f.copies;
-    cols.extend([
-        f.host_domains.len().to_string(),
-        num(f.host_domains.iter().map(|(_, v)| *v).fold(0.0, f64::max)),
-        s.length.to_string(),
-        num(s.composition.gc),
-        opt(s.ltr.as_ref().map(|r| r.length as f64)),
-        opt(s.ltr.as_ref().map(|r| r.identity)),
-        opt(s.tir.as_ref().map(|r| r.length as f64)),
-        opt(s.tir.as_ref().map(|r| r.identity)),
-        flag(s.tail == Some(Tail::PolyA3)),
-        flag(s.tail == Some(Tail::PolyT5)),
-        opt(s.tandem.as_ref().map(|t| t.period as f64)),
-        opt(s.tandem.as_ref().map(|t| t.identity)),
-        opt(s.tandem.as_ref().map(|t| t.copies)),
-        s.longest_orf_aa().to_string(),
-        s.orfs.len().to_string(),
-        flag(s.tg_ca_termini),
-        flag(s.helitron_termini),
-        flag(c.is_some()),
-        opt(c.map(|c| c.loci as f64)),
-        opt(c.map(|c| c.full_length as f64)),
-        opt(c.map(|c| c.mean_identity)),
-        opt(c.map(|c| c.genome_bp as f64)),
-        opt(c.and_then(|c| c.tsd.as_ref()).map(|t| t.length as f64)),
-        opt(c.and_then(|c| c.tsd.as_ref()).map(|t| t.support)),
-        opt(c.and_then(|c| c.tsd.as_ref()).map(|t| t.null_support)),
-        opt(c.and_then(|c| c.flank_similarity)),
-        opt(c.and_then(|c| c.helitron_ends.as_ref()).map(|h| h.support)),
-        opt(c
-            .and_then(|c| c.helitron_ends.as_ref())
-            .map(|h| h.null_support)),
-    ]);
-    let mut line = String::new();
-    write!(line, "{}", cols.join("\t")).expect("writing to a String cannot fail");
-    line
+    let mut cols: Vec<String> = vec![
+        f.family_id.into(),
+        f.original_label.into(),
+        f.label.into(),
+        f.disposition.into(),
+        f.confidence.into(),
+    ];
+    cols.extend(
+        values(f)
+            .into_iter()
+            .map(|v| v.map(num).unwrap_or_default()),
+    );
+    cols.join("\t")
 }

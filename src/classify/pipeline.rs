@@ -26,6 +26,7 @@ use super::{
         HomologyBackend, HomologySummary, ProteinHit,
     },
     library::{read_library, LibraryFamily},
+    model::{Classifier, ModelCall},
     rmout::{copy_evidence_from_rm, load_genome, read_rm_out},
     structure::{analyse, StructuralEvidence, StructureParams},
     taxonomy::canonical_class,
@@ -51,6 +52,8 @@ pub struct ClassifyConfig {
     pub te_hmms: Option<PathBuf>,
     /// Foreign segments of nucleotide references (`rep refdb mosaics`).
     pub mosaics: Option<PathBuf>,
+    /// Learned classifier (`classifier.json`) run beside the rule cascade.
+    pub model: Option<PathBuf>,
     /// Scan ORFs of families without TE protein evidence against all of
     /// `pfam` to recognise multicopy host genes.
     pub host_domains: bool,
@@ -85,6 +88,7 @@ impl ClassifyConfig {
             pfam: None,
             te_hmms: None,
             mosaics: None,
+            model: None,
             host_domains: false,
             copies_dir: None,
             rm_out: None,
@@ -113,6 +117,9 @@ impl ClassifyConfig {
         }
         if db.mosaics().is_file() {
             config.mosaics = Some(db.mosaics());
+        }
+        if db.classifier().is_file() {
+            config.model = Some(db.classifier());
         }
         config
     }
@@ -179,6 +186,8 @@ pub struct FamilyClassification {
     pub domains: DomainEvidence,
     pub copies: Option<CopyEvidence>,
     pub structure: StructuralEvidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelCall>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -192,6 +201,10 @@ pub struct ClassifySummary {
     /// Number of protein hits whose subject name matched no taxonomy rule.
     pub unclassified_subject_hits: usize,
     pub label_agreement: BTreeMap<String, usize>,
+    /// The learned classifier against the cascade: `agree`, `disagree`, `gated_non_te`,
+    /// `model_only_<confidence>` where the cascade made no call.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_agreement: BTreeMap<String, usize>,
     pub commands: Vec<Vec<String>>,
 }
 
@@ -388,6 +401,7 @@ pub fn run_classify_with_runner(
         _ => None,
     };
 
+    let classifier = c.model.as_deref().map(Classifier::load).transpose()?;
     let mut families = Vec::new();
     let mut feature_rows = vec![features::header()];
     for (family, structure) in selected.iter().zip(structures) {
@@ -455,7 +469,7 @@ pub fn run_classify_with_runner(
             family_hits(&hits, &hits_by_family, &family.id)
                 .into_iter()
                 .partition(|h| h.subject_id.starts_with("hmm_"));
-        feature_rows.push(features::row(&features::FeatureInputs {
+        let inputs = features::FeatureInputs {
             family_id: &family.id,
             original_label: family.label.as_deref().unwrap_or(""),
             label: &disposition.label,
@@ -471,7 +485,17 @@ pub fn run_classify_with_runner(
                 .get(&family.id)
                 .map_or(&[][..], Vec::as_slice),
             embedded_hit: embedded.contains_key(&family.id),
-        }));
+        };
+        feature_rows.push(features::row(&inputs));
+        let model = classifier.as_ref().map(|m| {
+            m.call(
+                &features::values(&inputs),
+                &disposition,
+                &homology,
+                &nucleotide_homology,
+                &domains,
+            )
+        });
         families.push(FamilyClassification {
             family_id: family.id.clone(),
             name: family.name.clone(),
@@ -483,6 +507,7 @@ pub fn run_classify_with_runner(
             domains,
             copies,
             structure,
+            model,
         });
     }
 
@@ -913,7 +938,8 @@ fn write_outputs(
          domain_architecture\tdomain_class\tdomain_novelty\t\
          copy_loci\tcopy_full_length\tcopy_identity\tgenome_bp\ttsd_length\ttsd_motif\ttsd_support\tflank_similarity\thelitron_ends\thelitron_ends_null\t\
          ltr_length\tltr_identity\ttir_length\ttir_identity\ttail\ttandem_period\t\
-         tandem_identity\tlongest_orf_aa\tn_orfs\tgc\tevidence\twarnings\n",
+         tandem_identity\tlongest_orf_aa\tn_orfs\tgc\tevidence\twarnings\t\
+         model_class\tmodel_label\tmodel_probability\tmodel_confidence\n",
     );
     for f in families {
         let best = f.homology.best();
@@ -922,7 +948,7 @@ fn write_outputs(
         let opt = |v: Option<String>| v.unwrap_or_default();
         writeln!(
             tsv,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}",
             f.family_id,
             f.original_label.as_deref().unwrap_or(""),
             s.length,
@@ -966,6 +992,10 @@ fn write_outputs(
             s.composition.gc,
             f.disposition.evidence.join(";"),
             f.disposition.warnings.join(";"),
+            opt(f.model.as_ref().map(|m| m.class.clone())),
+            opt(f.model.as_ref().map(|m| m.label.clone())),
+            opt(f.model.as_ref().map(|m| format!("{:.4}", m.probability))),
+            opt(f.model.as_ref().map(|m| m.confidence.clone())),
         )
         .expect("writing to a String cannot fail");
     }
@@ -1037,7 +1067,25 @@ fn summarise_run(
     let mut by_disposition = BTreeMap::new();
     let mut by_label = BTreeMap::new();
     let mut label_agreement = BTreeMap::new();
+    let mut model_agreement = BTreeMap::new();
     for f in families {
+        if let Some(m) = &f.model {
+            let key = if m.gated {
+                "gated_non_te".to_owned()
+            } else if matches!(
+                f.disposition.kind,
+                DispositionKind::KnownTe | DispositionKind::Chimeric
+            ) {
+                if canonical_class(&f.disposition.label) == canonical_class(&m.label) {
+                    "agree".to_owned()
+                } else {
+                    "disagree".to_owned()
+                }
+            } else {
+                format!("model_only_{}", m.confidence)
+            };
+            *model_agreement.entry(key).or_insert(0) += 1;
+        }
         *by_disposition
             .entry(f.disposition.kind.as_str().to_owned())
             .or_insert(0) += 1;
@@ -1055,6 +1103,7 @@ fn summarise_run(
         by_label,
         unclassified_subject_hits: hits.iter().filter(|h| h.class.is_none()).count(),
         label_agreement,
+        model_agreement,
         commands,
     }
 }
@@ -1392,5 +1441,59 @@ mod tests {
         assert_eq!(col("has_copies"), "0");
         assert_eq!(col("tsd_length"), "");
         assert_eq!(col("length"), "400");
+    }
+
+    #[test]
+    fn the_learned_classifier_runs_beside_the_cascade() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("lib.fa");
+        fs::write(&lib, format!(">fam#Unknown\n{}\n", random(400, 7))).unwrap();
+        let nucl = dir.path().join("te_nucl.fa");
+        fs::write(&nucl, ">Hel-1#RC/Helitron\nACGT\n").unwrap();
+        // RC whenever there is RC nucleotide homology, DNA otherwise
+        let model = dir.path().join("classifier.json");
+        fs::write(
+            &model,
+            serde_json::json!({
+                "schema": crate::classify::CLASSIFIER_SCHEMA,
+                "features_schema": features::FEATURES_SCHEMA,
+                "classes": ["DNA", "RC"],
+                "transform": {"columns": ["nucl_bits_RC"], "log1p": ["nucl_bits_RC"],
+                              "missing_indicators": [], "mean": [0.0], "std": [1.0]},
+                "weights": [[0.0], [5.0]],
+                "bias": [5.0, 0.0],
+                "training": {"rows": 10}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let runner = MockRunner {
+            hits: String::new(),
+            nucl_hits: "fam#Unknown\tHel-1#RC/Helitron\t400\t400\t90.0\t380\t\
+                        11\t390\t11\t390\t1e-80\t600\n"
+                .into(),
+        };
+        let mut config = ClassifyConfig::new(lib, PathBuf::new(), dir.path().join("out"));
+        config.proteins = None;
+        config.nucleotides = Some(nucl);
+        config.model = Some(model);
+        let r = run_classify_with_runner(&config, &runner).unwrap();
+        let m = r.families[0].model.as_ref().unwrap();
+        assert_eq!((m.class.as_str(), m.label.as_str()), ("RC", "RC/Helitron"));
+        assert!(m.probability > 0.99 && !m.gated);
+        let table = fs::read_to_string(dir.path().join("out/classification.tsv")).unwrap();
+        let rows = table
+            .lines()
+            .map(|l| l.split('\t').collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        assert_eq!(rows[0].len(), rows[1].len());
+        let col = |name: &str| rows[1][rows[0].iter().position(|h| *h == name).unwrap()];
+        assert_eq!(col("model_class"), "RC");
+        assert_eq!(col("model_label"), "RC/Helitron");
+        assert_eq!(col("model_confidence"), "high");
+        let summary: ClassifySummary =
+            serde_json::from_slice(&fs::read(dir.path().join("out/summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary.model_agreement.values().sum::<usize>(), 1);
     }
 }

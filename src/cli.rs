@@ -430,6 +430,12 @@ fn classify_command() -> clap::Command {
                 .value_parser(value_parser!(PathBuf)),
         )
         .arg(
+            Arg::new("model")
+                .long("model")
+                .help("Learned classifier run beside the rule cascade (default with --refdb: <db>/build/classifier.json)")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
             Arg::new("te-hmms")
                 .long("te-hmms")
                 .help("Pressed superfamily profile HMMs (default with --refdb: <db>/hmms/te_hmms.hmm)")
@@ -488,6 +494,9 @@ where
     config.host_domains = m.get_flag("host-domains");
     if let Some(hmms) = m.get_one::<PathBuf>("te-hmms") {
         config.te_hmms = Some(hmms.clone());
+    }
+    if let Some(model) = m.get_one::<PathBuf>("model") {
+        config.model = Some(model.clone());
     }
     config.copies_dir = m.get_one::<PathBuf>("copies").cloned();
     config.rm_out = m.get_one::<PathBuf>("rm-out").cloned();

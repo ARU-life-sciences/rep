@@ -798,6 +798,23 @@ pub fn status_report(db: &RefDb) -> Result<String> {
         ),
     }
     .ok();
+    let classifier = fs::read(db.classifier())
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+    match classifier {
+        Some(c) => writeln!(
+            text,
+            "  classifier     {} classes, trained on {} rows ({})",
+            c["classes"].as_array().map_or(0, Vec::len),
+            c["training"]["rows"].as_u64().unwrap_or(0),
+            c["features_schema"].as_str().unwrap_or("?")
+        ),
+        None => writeln!(
+            text,
+            "  classifier     none (fit with scripts/classifier/fit.py into build/classifier.json)"
+        ),
+    }
+    .ok();
     Ok(text)
 }
 

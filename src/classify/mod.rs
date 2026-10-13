@@ -12,6 +12,7 @@ mod domains;
 mod features;
 mod homology;
 mod library;
+mod model;
 mod pipeline;
 mod rmout;
 mod structure;
@@ -33,6 +34,7 @@ pub use homology::{
     ClassSupport, HomologyBackend, HomologySummary, ProteinHit,
 };
 pub use library::{read_library, split_label, LibraryFamily};
+pub use model::{Classifier, ModelCall, CLASSIFIER_SCHEMA};
 pub use pipeline::{
     run_classify, run_classify_with_runner, ClassifyConfig, ClassifyResult, ClassifySummary,
     FamilyClassification, SCHEMA_VERSION,

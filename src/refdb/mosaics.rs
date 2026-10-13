@@ -86,6 +86,10 @@ impl RefDb {
     pub fn mosaics(&self) -> PathBuf {
         self.build_dir().join("mosaics.tsv")
     }
+    /// The learned top-level classifier fitted by `scripts/classifier/fit.py`.
+    pub fn classifier(&self) -> PathBuf {
+        self.build_dir().join("classifier.json")
+    }
 }
 
 /// One alignment of the self-search: reference `host` contains `guest`.
