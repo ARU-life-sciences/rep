@@ -26,6 +26,10 @@ pub struct CliArgs {
     pub curation_only: bool,
     // stop after RepeatModeler
     pub rmo_only: bool,
+    // with a refdb, also run copy-recovery curation (always runs without one)
+    pub curate: bool,
+    // TE-called families of related genomes for the classify second pass
+    pub relatives: Option<PathBuf>,
     // verbose flag
     pub verbose: bool,
     // run RepeatModeler's LTR structural discovery (-LTRStruct)
@@ -119,6 +123,15 @@ pub fn parse_args() -> Result<CliArgs> {
                 .requires("refdb")
                 .value_parser(value_parser!(PathBuf)),
         )
+        .arg(
+            arg!(--relatives <RELATIVES> "TE-called families of related genomes (`rep relatives`) for Unknowns nothing else explains (with --refdb).")
+                .requires("refdb")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            arg!(--curate "With --refdb, also run copy-recovery curation (copy alignments for manual curation); classification takes its copy evidence from RepeatMasker.")
+                .action(ArgAction::SetTrue),
+        )
         .arg(arg!(--verbose "Print extra debug information").action(ArgAction::SetTrue))
         .get_matches();
 
@@ -190,6 +203,8 @@ pub fn parse_args() -> Result<CliArgs> {
         rma_only,
         curation_only,
         rmo_only,
+        curate: matches.get_flag("curate"),
+        relatives: matches.get_one::<PathBuf>("relatives").cloned(),
         verbose,
         ltr_struct,
         refdb,

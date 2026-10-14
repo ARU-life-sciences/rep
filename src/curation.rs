@@ -488,6 +488,8 @@ mod tests {
             rma_only: false,
             curation_only: false,
             rmo_only: false,
+            curate: false,
+            relatives: None,
             verbose: false,
             ltr_struct: false,
             refdb: None,

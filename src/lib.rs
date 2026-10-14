@@ -89,17 +89,24 @@ pub fn pipeline() -> Result<()> {
         return Ok(());
     }
 
-    eprintln!("Running consensus curation...");
-    curation::run_curation_via_copy_recovery(matches.clone(), &runner)?;
-
-    if let Some(db) = &matches.refdb {
-        eprintln!("Classifying repeat families...");
-        run_classification(&matches, db, &runner)?;
+    let Some(db) = matches.refdb.clone() else {
+        eprintln!("Running consensus curation...");
+        curation::run_curation_via_copy_recovery(matches.clone(), &runner)?;
+        eprintln!("Running RepeatMasker...");
+        run_repeatmasker(matches.clone(), &runner)?;
+        return Ok(());
+    };
+    if matches.curate {
+        eprintln!("Running consensus curation...");
+        curation::run_curation_via_copy_recovery(matches.clone(), &runner)?;
     }
-
-    // and also run repeatmasker
+    // masking first: classification takes its copy evidence from the annotation
     eprintln!("Running RepeatMasker...");
     run_repeatmasker(matches.clone(), &runner)?;
+    eprintln!("Classifying repeat families...");
+    run_classification(&matches, &db, &runner)?;
+    eprintln!("Carrying labels into the annotation...");
+    run_relabel(&matches)?;
 
     Ok(())
 }
@@ -158,13 +165,47 @@ fn run_classification(matches: &CliArgs, db: &Path, runner: &dyn CommandRunner) 
     );
     config.threads = usize::from(matches.rmo_threads);
     config.pfam = matches.pfam.clone();
-    // copy recovery has already run in the full pipeline
-    config.copies_dir = Some(configure.join("curation").join("recovery"));
+    // every family, so RepeatClassifier's labels are checked too
+    config.all_families = true;
+    config.host_domains = matches.pfam.is_some();
+    config.relatives = matches.relatives.clone();
+    config.rm_out = Some(repeatmasker::rm_out_path(matches)?);
+    config.genome = Some(matches.fasta_file.clone());
     let result = classify::run_classify_with_runner(&config, runner)?;
     eprintln!(
         "Classified {} families: {:?}",
         result.summary.classified_families, result.summary.by_disposition
     );
+    Ok(())
+}
+
+/// `rep relabel` on the pipeline's annotation: `results/annotation/`.
+fn run_relabel(matches: &CliArgs) -> Result<()> {
+    let configure = matches.configure_path()?;
+    let sizes = configure.join(DATA).join("genome.sizes");
+    write_sizes(&matches.fasta_file, &sizes)?;
+    let s = classify::relabel(&classify::RelabelConfig {
+        classify_dir: configure.join(CLASSIFY),
+        rm_out: repeatmasker::rm_out_path(matches)?,
+        genome_sizes: Some(sizes),
+        output_dir: configure.join(RESULTS).join("annotation"),
+    })?;
+    eprintln!(
+        "Relabelled {} of {} RepeatMasker hits; Unknown {} bp -> {} bp",
+        s.relabelled_hits, s.hits, s.unknown_bp_before, s.unknown_bp_after
+    );
+    Ok(())
+}
+
+/// Sequence names and lengths of a FASTA, as a `.sizes` file.
+fn write_sizes(fasta: &Path, out: &Path) -> Result<()> {
+    use std::io::Write;
+    let mut w = std::io::BufWriter::new(File::create(out)?);
+    for record in bio::io::fasta::Reader::from_file(fasta)?.records() {
+        let record = record?;
+        writeln!(w, "{}\t{}", record.id(), record.seq().len())?;
+    }
+    w.flush()?;
     Ok(())
 }
 
@@ -333,6 +374,8 @@ mod tests {
             rma_only: false,
             curation_only: false,
             rmo_only: false,
+            curate: false,
+            relatives: None,
             verbose: false,
             ltr_struct: false,
             refdb: None,

@@ -7,7 +7,32 @@ use crate::{
     Result, DATA, REPEATMASKER_ENV,
 };
 
+/// The RepeatMasker annotation of the pipeline's genome copy.
+pub fn rm_out_path(matches: &CliArgs) -> Result<PathBuf> {
+    let name = matches
+        .fasta_file
+        .file_name()
+        .ok_or_else(|| Error::new(ErrorKind::GenericCli("FASTA path has no filename".into())))?;
+    Ok(matches
+        .configure_path()?
+        .join(DATA)
+        .join("repeatmasker")
+        .join(format!("{}.out", name.to_string_lossy())))
+}
+
+/// Mask the genome with the RepeatModeler library. Labels from `rep classify`
+/// are carried into the annotation afterwards (`rep relabel`), so masking does
+/// not wait for classification, which takes its copy evidence from this run.
+/// A finished annotation is reused.
 pub fn run_repeatmasker(matches: CliArgs, runner: &dyn CommandRunner) -> Result<()> {
+    let out = rm_out_path(&matches)?;
+    if out.is_file() {
+        eprintln!(
+            "RepeatMasker annotation already present, skipping RepeatMasker: {}",
+            out.display()
+        );
+        return Ok(());
+    }
     // get the data path again
     let mut data_path = matches.configure_path()?.to_path_buf();
     data_path.push(DATA);
@@ -17,23 +42,7 @@ pub fn run_repeatmasker(matches: CliArgs, runner: &dyn CommandRunner) -> Result<
     let mut repeatmodeler_path = matches.configure_path()?.to_path_buf();
     repeatmodeler_path.push(DATA);
     repeatmodeler_path.push("repeatmodeler");
-    // mask with the reclassified library when the classification stage ran
-    let full_consensi_path = match &matches.refdb {
-        Some(_) => {
-            let path = matches
-                .configure_path()?
-                .join(crate::CLASSIFY)
-                .join("library.reclassified.fa");
-            if !path.is_file() {
-                return Err(Error::new(ErrorKind::GenericCli(format!(
-                    "{} not found; run the classification stage before masking",
-                    path.display()
-                ))));
-            }
-            path
-        }
-        None => find_consensus_library(&repeatmodeler_path)?,
-    };
+    let full_consensi_path = find_consensus_library(&repeatmodeler_path)?;
 
     eprintln!("Data path: {:?}", data_path);
 
@@ -160,6 +169,8 @@ mod tests {
             rma_only: false,
             curation_only: false,
             rmo_only: false,
+            curate: false,
+            relatives: None,
             verbose: false,
             ltr_struct: false,
             refdb: None,
@@ -183,12 +194,29 @@ mod tests {
         assert!(run_repeatmasker(args, &runner).is_ok());
     }
 
+    struct Recorder(std::cell::RefCell<Vec<Vec<String>>>);
+
+    impl CommandRunner for Recorder {
+        fn run(&self, cmd: &mut Command) -> Result<Output> {
+            self.0.borrow_mut().push(
+                cmd.get_args()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect(),
+            );
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
     #[test]
-    fn masks_with_reclassified_library_when_refdb_is_set() {
+    fn masks_with_the_repeatmodeler_library_and_reuses_an_annotation() {
         let tmp = tempdir().unwrap();
         let fasta = tmp.path().join("genome.fa");
         write(&fasta, ">x\nACGT").unwrap();
-        let args = CliArgs {
+        let mut args = CliArgs {
             fasta_file: fasta,
             curation_target: None,
             configure: Some(tmp.path().to_path_buf()),
@@ -198,20 +226,28 @@ mod tests {
             rma_only: true,
             curation_only: false,
             rmo_only: false,
+            curate: false,
+            relatives: None,
             verbose: false,
             ltr_struct: false,
             refdb: Some(tmp.path().join("db")),
             pfam: None,
         };
-        set_up_filesystem(args.clone()).unwrap();
-        let err = run_repeatmasker(args.clone(), &MockRunner).unwrap_err();
-        assert!(err.to_string().contains("run the classification stage"));
-        std::fs::create_dir_all(tmp.path().join("classify")).unwrap();
-        write(
-            tmp.path().join("classify/library.reclassified.fa"),
-            ">a#LTR/Gypsy\nACGT",
-        )
-        .unwrap();
-        assert!(run_repeatmasker(args, &MockRunner).is_ok());
+        args.fasta_file = set_up_filesystem(args.clone()).unwrap();
+        let rm = tmp.path().join("data/repeatmodeler/RM_1");
+        std::fs::create_dir_all(&rm).unwrap();
+        write(rm.join("consensi.fa.classified"), ">a#Unknown\nACGT").unwrap();
+        let runner = Recorder(Default::default());
+        run_repeatmasker(args.clone(), &runner).unwrap();
+        let calls = runner.0.into_inner();
+        let lib = calls[0].iter().position(|a| a == "-lib").unwrap();
+        assert!(calls[0][lib + 1].ends_with("RM_1/consensi.fa.classified"));
+
+        let out = rm_out_path(&args).unwrap();
+        assert_eq!(out, tmp.path().join("data/repeatmasker/genome.fa.out"));
+        write(&out, "").unwrap();
+        let runner = Recorder(Default::default());
+        run_repeatmasker(args, &runner).unwrap();
+        assert!(runner.0.into_inner().is_empty());
     }
 }
