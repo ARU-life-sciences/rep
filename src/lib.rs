@@ -84,6 +84,10 @@ pub fn pipeline() -> Result<()> {
     eprintln!("Running RepeatModeler...");
     let runner = RealCommandRunner;
     run_repeatmodeler(matches.clone(), &runner)?;
+    if matches.rmo_only {
+        eprintln!("Stopping after RepeatModeler (--rmo_only)");
+        return Ok(());
+    }
 
     eprintln!("Running consensus curation...");
     curation::run_curation_via_copy_recovery(matches.clone(), &runner)?;
@@ -328,6 +332,7 @@ mod tests {
             rma_threads: 1,
             rma_only: false,
             curation_only: false,
+            rmo_only: false,
             verbose: false,
             ltr_struct: false,
             refdb: None,

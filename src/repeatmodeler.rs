@@ -23,6 +23,16 @@ pub fn run_repeatmodeler(matches: CliArgs, runner: &dyn CommandRunner) -> Result
     // and go into the repeatmodeler dir
     data_path.push("repeatmodeler");
 
+    // a finished run in this directory is reused, so a pipeline stopped with
+    // `--rmo_only` (or one that failed later) resumes after RepeatModeler
+    if let Ok(library) = crate::repeatmasker::find_consensus_library(&data_path) {
+        eprintln!(
+            "RepeatModeler library already present, skipping RepeatModeler: {}",
+            library.display()
+        );
+        return Ok(());
+    }
+
     // TODO: eventually have the stderr/stdout of commands
     // as optional, maybe behind a verbose flag, and saved to a file
 
@@ -102,6 +112,7 @@ mod tests {
             rma_threads: 1,
             rma_only: false,
             curation_only: false,
+            rmo_only: false,
             verbose: false,
             ltr_struct: false,
             refdb: None,
@@ -147,6 +158,7 @@ mod tests {
             rma_threads: 1,
             rma_only: false,
             curation_only: false,
+            rmo_only: false,
             verbose: false,
             ltr_struct: true,
             refdb: None,
@@ -161,5 +173,34 @@ mod tests {
             &calls[1][1..],
             ["-database", "db", "-threads", "4", "-LTRStruct"]
         );
+    }
+
+    #[test]
+    fn reuses_a_finished_library() {
+        let tmp = tempdir().unwrap();
+        let fasta = tmp.path().join("genome.fa");
+        std::fs::write(&fasta, ">x\nACGT").unwrap();
+        let args = CliArgs {
+            fasta_file: fasta,
+            curation_target: None,
+            configure: Some(tmp.path().to_path_buf()),
+            database: Some("db".to_string()),
+            rmo_threads: 4,
+            rma_threads: 1,
+            rma_only: false,
+            curation_only: false,
+            rmo_only: true,
+            verbose: false,
+            ltr_struct: false,
+            refdb: None,
+            pfam: None,
+        };
+        set_up_filesystem(args.clone()).unwrap();
+        let rm = tmp.path().join(DATA).join("repeatmodeler").join("RM_1.Mon");
+        std::fs::create_dir_all(&rm).unwrap();
+        std::fs::write(rm.join("consensi.fa.classified"), ">f#Unknown\nACGT\n").unwrap();
+        let runner = Recorder(Default::default());
+        run_repeatmodeler(args, &runner).unwrap();
+        assert!(runner.0.into_inner().is_empty());
     }
 }

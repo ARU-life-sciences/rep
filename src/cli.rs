@@ -24,6 +24,8 @@ pub struct CliArgs {
     pub rma_only: bool,
     // run consensus curation from existing RepeatModeler output
     pub curation_only: bool,
+    // stop after RepeatModeler
+    pub rmo_only: bool,
     // verbose flag
     pub verbose: bool,
     // run RepeatModeler's LTR structural discovery (-LTRStruct)
@@ -100,6 +102,11 @@ pub fn parse_args() -> Result<CliArgs> {
                 .action(ArgAction::SetTrue)
         )
         .arg(
+            arg!(--rmo_only "Stop after RepeatModeler. A later run in the same directory reuses its library.")
+                .conflicts_with_all(["rma_only", "curation_only"])
+                .action(ArgAction::SetTrue)
+        )
+        .arg(
             arg!(--ltr_struct "Run RepeatModeler with -LTRStruct (LTR structural discovery).")
                 .action(ArgAction::SetTrue),
         )
@@ -156,6 +163,8 @@ pub fn parse_args() -> Result<CliArgs> {
 
     let curation_only = matches.get_flag("curation_only");
 
+    let rmo_only = matches.get_flag("rmo_only");
+
     let verbose = matches.get_flag("verbose");
 
     let ltr_struct = matches.get_flag("ltr_struct");
@@ -180,6 +189,7 @@ pub fn parse_args() -> Result<CliArgs> {
         rma_threads,
         rma_only,
         curation_only,
+        rmo_only,
         verbose,
         ltr_struct,
         refdb,

@@ -487,6 +487,7 @@ mod tests {
             rma_threads: 1,
             rma_only: false,
             curation_only: false,
+            rmo_only: false,
             verbose: false,
             ltr_struct: false,
             refdb: None,
