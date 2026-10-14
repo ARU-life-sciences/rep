@@ -296,6 +296,18 @@ be right first.
       *Bombylius discolor* rnd-6_family-1284, was "LTR/Unknown": two copies of an 803 bp unit, 186 loci over
       24.7 Mb). High-confidence known TEs: ratio 99th percentile 1.01, 0.07% above 1.5. On the 40 libraries:
       48 open Unknowns (76 Mb, 5% of open bp) and 2 of ~4,100 open RepeatModeler-labelled TE families.
+- [x] v6 batch (all 559 libraries; model decisions, relatives pass, tandem arrays): 1.70 M families,
+      decided by cascade 1.07 M, relatives 610k, model 15.7k; 30.3% of the 1.11 M RepeatModeler Unknowns
+      remain Unknown; 1,262 tandem-array satellites (2.5 Gb), 212 of them RepeatModeler "TEs" (median
+      92 bp, no homology). `discover` on v6: 5.0k multi-species groups where every member is still open
+      (12.6k families, 375 Mb; mostly two-species insect pairs, none with TIRs: the TIR-rich groups are now
+      labelled DNA by relatives).
+- [x] Cluster consensus over relatives. Relative labels agreed with the confident labels of their
+      discover group only 0.74 of the time on v6 (0.87 for matches within the library), against 0.985
+      leave-one-out for group propagation. References are now our confident calls (model decisions,
+      cascade calls above low), else RepeatClassifier's label where we did not contradict its class, never
+      relative labels; members whose propagated label differs in class go to `relabels.tsv`, which
+      `rep relabel --overrides` applies.
 - [ ] Negative filters: organellar inserts, multi-copy host genes. Rfam (cmscan, all 4,227 models,
       E ≤ 1e-5) does not help: 0.6% of RepeatModeler SINE/tRNA families hit a tRNA model (heads too
       degraded), and uncalled Unknowns hit no tRNA, 5S, 7SL, rRNA or snRNA model (0.3% hit plant miRNA
@@ -304,9 +316,25 @@ be right first.
 
 ### M5 – Feedback into masking (partly done)
 
-- [x] The full pipeline runs `classify` between copy recovery and RepeatMasker (`--refdb`, `--pfam`),
-      and RepeatMasker masks with the relabelled library. `--ltr_struct` passes `-LTRStruct` to RepeatModeler.
-- [ ] Report the fraction of Unknown base pairs resolved (compare RepeatMasker tables before and after).
+- [x] The full pipeline with `--refdb` follows the batch route: RepeatModeler → RepeatMasker with its
+      library → `classify --all` (copy evidence from the `.out`, `--host-domains` with `--pfam`,
+      `--relatives`) → `relabel` into `results/annotation/`. Copy-recovery curation runs with `--curate`
+      (always without `--refdb`). A finished RepeatModeler library and RepeatMasker annotation are reused,
+      and `--rmo_only` stops after RepeatModeler, so a second pass with `--relatives` reruns only classify.
+- [x] `rep relabel --classify <dir> --rm-out <.out> [--genome-sizes] [--overrides relabels.tsv --sample]`
+      rewrites the class/family column of an existing annotation (no remasking) and reports base pairs per
+      class before and after (union of intervals), Unknown bp resolved by class and by deciding stage.
+      *Bombylius discolor*: Unknown 23.2% → 4.3% of the genome, Satellite 0.25% → 12.8%, SINE 0.17% → 0.01%.
+- [ ] Batch numbers over the 559 libraries, with and without the discover relabels.
+
+### Mosses (started 2026-10-14)
+
+Bryophytes have no RepeatModeler libraries in the ToL or Ensembl data (7 ToL species on the Ensembl FTP),
+so the panel runs the full pipeline: 35 genomes (`rep_moss_panel/panel.tsv`), one or more per moss order
+plus two liverworts, 15.4 Gb in total. Stage 1 `--rmo_only` (RepeatModeler -LTRStruct), stage 2 the
+`--refdb` pipeline, then `rep relatives` over the panel and a classify second pass with `--relatives`,
+then `discover`. The earlier *Ptychomitrium polyphyllum* run (rep 96af2f3) left 387 of 430 families
+Unknown with only 4 known TEs.
 
 ### M6 – `rep annotate`: one-stop TE identification for any sequence (CENSOR replacement)
 
