@@ -837,6 +837,18 @@ pub fn run_relabel() -> Result<()> {
                 .help("Sequence lengths (.sizes or .fai), for percentages of the genome")
                 .value_parser(value_parser!(PathBuf)),
         )
+        .arg(
+            Arg::new("overrides")
+                .long("overrides")
+                .help("`rep discover` relabels.tsv: cluster labels applied over the classify labels")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("sample")
+                .long("sample")
+                .requires("overrides")
+                .help("Sample of these rows in --overrides (species/accession, as discover names it)"),
+        )
         .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf)))
         .try_get_matches_from(std::env::args_os().skip(1))
         .unwrap_or_else(|e| e.exit());
@@ -845,6 +857,8 @@ pub fn run_relabel() -> Result<()> {
         classify_dir: path("classify"),
         rm_out: path("rm-out"),
         genome_sizes: m.get_one::<PathBuf>("genome-sizes").cloned(),
+        overrides: m.get_one::<PathBuf>("overrides").cloned(),
+        sample: m.get_one::<String>("sample").cloned(),
         output_dir: path("out"),
     })?;
     eprintln!(

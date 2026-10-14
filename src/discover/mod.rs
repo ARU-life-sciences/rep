@@ -99,6 +99,9 @@ pub struct DiscoverSummary {
     pub unlabelled_members: usize,
     pub propagated_from_family_cluster: usize,
     pub propagated_from_group: usize,
+    /// Members whose propagated label differs in class from their own
+    /// (`relabels.tsv`, for `rep relabel --overrides`).
+    pub relabels: usize,
     /// Leave-one-out accuracy of propagation on labelled members, by level.
     pub loo_family_cluster: Accuracy,
     pub loo_group: Accuracy,
@@ -260,6 +263,7 @@ pub fn run_discover(c: &DiscoverConfig, runner: &dyn CommandRunner) -> Result<Di
     summary.unlabelled_members = members.iter().filter(|m| m.reference.is_none()).count();
 
     write_members(c, &members, &family_of, &group_of, &propagated)?;
+    summary.relabels = write_relabels(c, &members, &propagated)?;
     (summary.novel_groups, summary.novel_groups_multi_species) =
         write_groups(c, &members, &by_group, &family_of)?;
     fs::write(
@@ -396,14 +400,24 @@ fn member_from_row(
     let get = |k: &str| row.get(k).cloned().unwrap_or_default();
     let original = get("original_label");
     let (disposition, label, confidence) = (get("disposition"), get("label"), get("confidence"));
-    // a reference label: RepeatClassifier's TE label, else our own confident TE call
+    // a reference label: our own confident TE call (the learned classifier's
+    // decision, or a cascade call above low confidence), else RepeatClassifier's
+    // TE label where we did not contradict its class; never a label from relatives
     let usable = |l: &str| !l.is_empty() && !l.starts_with("Unknown") && !is_non_te(l);
-    let reference = if usable(&original) {
-        Some(original.clone())
-    } else if disposition == "known_te" && confidence != "low" && usable(&label) {
-        Some(label.clone())
-    } else {
-        None
+    let decided_by = get("decided_by");
+    let reference = match decided_by.as_str() {
+        "relative" => None,
+        "model" if usable(&label) => Some(label.clone()),
+        _ if matches!(disposition.as_str(), "known_te" | "chimeric")
+            && confidence != "low"
+            && usable(&label) =>
+        {
+            Some(label.clone())
+        }
+        _ if usable(&original) && top_level(&label) == top_level(&original) => {
+            Some(original.clone())
+        }
+        _ => None,
     };
     let mut hallmarks = Vec::new();
     for (key, name) in [
@@ -550,6 +564,42 @@ fn write_members(
     out.flush()?;
     Ok(())
 }
+
+/// Members whose propagated label differs in class from their own label,
+/// for `rep relabel --overrides`. Propagation reaches only members without a
+/// reference label, so these are Unknowns and labels from relatives or at
+/// low confidence, corrected by the confident labels of their cluster.
+fn write_relabels(
+    c: &DiscoverConfig,
+    members: &[Member],
+    propagated: &[Option<(String, &'static str, f64, usize)>],
+) -> Result<usize> {
+    let mut out = BufWriter::new(fs::File::create(c.output_dir.join(RELABELS))?);
+    writeln!(
+        out,
+        "sample\tfamily_id\tlabel\tnew_label\tsource\tpurity\tlabelled_neighbours"
+    )?;
+    let mut n = 0;
+    for (m, p) in members.iter().zip(propagated) {
+        let Some((label, from, purity, k)) = p else {
+            continue;
+        };
+        if top_level(label) == top_level(&m.label) {
+            continue;
+        }
+        writeln!(
+            out,
+            "{}\t{}\t{}\t{label}\t{from}\t{purity:.2}\t{k}",
+            m.sample, m.family_id, m.label
+        )?;
+        n += 1;
+    }
+    out.flush()?;
+    Ok(n)
+}
+
+/// Relabels written by `rep discover`.
+pub const RELABELS: &str = "relabels.tsv";
 
 /// Write group summaries, ranking groups without any labelled member as
 /// candidate novel classes. Returns the number of such groups, and of those
@@ -764,6 +814,58 @@ mod tests {
     }
 
     #[test]
+    fn references_are_confident_rep_calls_or_uncontradicted_repeatmodeler_labels() {
+        let reference = |orig: &str, disp: &str, label: &str, conf: &str, by: &str| {
+            let row = [
+                ("original_label", orig),
+                ("disposition", disp),
+                ("label", label),
+                ("confidence", conf),
+                ("decided_by", by),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect::<HashMap<_, _>>();
+            member_from_row(&row, "s", "s", "t", 100).reference
+        };
+        let some = |l: &str| Some(l.to_owned());
+        assert_eq!(
+            reference(
+                "Unknown",
+                "interspersed_repeat",
+                "DNA/hAT",
+                "medium",
+                "relative"
+            ),
+            None
+        );
+        assert_eq!(
+            reference("Unknown", "unresolved", "LINE/L2", "medium", "model"),
+            some("LINE/L2")
+        );
+        assert_eq!(
+            reference("SINE/tRNA", "known_te", "LINE/RTE", "high", "cascade"),
+            some("LINE/RTE")
+        );
+        // RepeatModeler's label stands where we agree on the class or found nothing
+        assert_eq!(
+            reference(
+                "LTR/Gypsy",
+                "interspersed_repeat",
+                "LTR/Gypsy",
+                "low",
+                "cascade"
+            ),
+            some("LTR/Gypsy")
+        );
+        // but not where we called another class, even at low confidence
+        assert_eq!(
+            reference("SINE/tRNA", "known_te", "DNA/hAT", "low", "cascade"),
+            None
+        );
+    }
+
+    #[test]
     fn propagates_labels_and_ranks_novel_groups() {
         let dir = tempfile::tempdir().unwrap();
         let results = dir.path().join("results");
@@ -838,6 +940,9 @@ mod tests {
             (2, 2)
         );
         assert_eq!((s.novel_groups, s.novel_groups_multi_species), (1, 0));
+        assert_eq!(s.relabels, 2);
+        let relabels = fs::read_to_string(dir.path().join("out").join(RELABELS)).unwrap();
+        assert!(relabels.contains("sp_b/GCA_2\tg1#Unknown\tUnknown\tLINE/L2\tfamily_cluster\t"));
         let members = fs::read_to_string(dir.path().join("out/members.tsv")).unwrap();
         assert!(members.lines().any(
             |l| l.contains("g1#Unknown") && l.contains("\tLINE/L2\tfamily_cluster\t1.00\t2\t")

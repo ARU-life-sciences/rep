@@ -188,6 +188,8 @@ fn run_relabel(matches: &CliArgs) -> Result<()> {
         classify_dir: configure.join(CLASSIFY),
         rm_out: repeatmasker::rm_out_path(matches)?,
         genome_sizes: Some(sizes),
+        overrides: None,
+        sample: None,
         output_dir: configure.join(RESULTS).join("annotation"),
     })?;
     eprintln!(

@@ -24,6 +24,10 @@ pub struct RelabelConfig {
     pub rm_out: PathBuf,
     /// `.sizes` or `.fai`: sequence names and lengths, for percentages.
     pub genome_sizes: Option<PathBuf>,
+    /// `rep discover` relabels (`relabels.tsv`), applied over the classify
+    /// labels for rows of `sample` (all rows without one).
+    pub overrides: Option<PathBuf>,
+    pub sample: Option<String>,
     pub output_dir: PathBuf,
 }
 
@@ -43,6 +47,8 @@ pub struct RelabelSummary {
     /// Base pairs Unknown before and labelled after, by what decided the label
     /// (`decided_by`; tandem-array satellites are cascade calls).
     pub unknown_resolved_by: BTreeMap<String, u64>,
+    /// Families relabelled from `rep discover`.
+    pub overridden_families: usize,
 }
 
 pub const RELABELLED_OUT: &str = "repeatmasker.relabelled.out";
@@ -87,6 +93,21 @@ fn read_labels(path: &Path) -> Result<HashMap<String, (String, String)>> {
         labels.insert(name.to_owned(), ((*new).to_owned(), by.to_owned()));
     }
     Ok(labels)
+}
+
+/// Family name → label from `rep discover`'s `relabels.tsv`, for one sample.
+fn read_overrides(path: &Path, sample: Option<&str>) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for line in BufReader::new(fs::File::open(path)?).lines().skip(1) {
+        let line = line?;
+        let f = line.split('\t').collect::<Vec<_>>();
+        if f.len() < 4 || sample.is_some_and(|s| s != f[0]) {
+            continue;
+        }
+        let name = f[1].split('#').next().unwrap_or(f[1]);
+        out.push((name.to_owned(), f[3].to_owned()));
+    }
+    Ok(out)
 }
 
 /// Byte span of the `n`th whitespace-separated field of a line.
@@ -168,10 +189,18 @@ fn read_sizes(path: &Path) -> Result<u64> {
 
 pub fn relabel(c: &RelabelConfig) -> Result<RelabelSummary> {
     fs::create_dir_all(&c.output_dir)?;
-    let labels = read_labels(&c.classify_dir.join("classification.tsv"))?;
+    let mut labels = read_labels(&c.classify_dir.join("classification.tsv"))?;
+    let mut overridden = 0;
+    if let Some(path) = &c.overrides {
+        for (family, label) in read_overrides(path, c.sample.as_deref())? {
+            labels.insert(family, (label, "discover".into()));
+            overridden += 1;
+        }
+    }
     let mut out = BufWriter::new(fs::File::create(c.output_dir.join(RELABELLED_OUT))?);
     let mut s = RelabelSummary {
         genome_bp: c.genome_sizes.as_deref().map(read_sizes).transpose()?,
+        overridden_families: overridden,
         ..Default::default()
     };
     type Intervals<K> = HashMap<(K, String), Vec<(u64, u64)>>;
@@ -306,6 +335,8 @@ score   div. del. ins.  sequence    begin     end    (left)    repeat         cl
             classify_dir: classify,
             rm_out,
             genome_sizes: Some(sizes),
+            overrides: None,
+            sample: None,
             output_dir: dir.path().join("out"),
         })
         .unwrap();
@@ -330,6 +361,42 @@ score   div. del. ins.  sequence    begin     end    (left)    repeat         cl
         assert_eq!(lines[6], OUT.lines().nth(6).unwrap());
         let tsv = fs::read_to_string(dir.path().join("out").join(SUMMARY_TSV)).unwrap();
         assert!(tsv.contains("DNA\t0\t100\t0.000\t10.000\n"));
+    }
+
+    #[test]
+    fn discover_relabels_override_classify_labels_for_their_sample() {
+        let dir = tempfile::tempdir().unwrap();
+        let classify = dir.path().join("classify");
+        fs::create_dir_all(&classify).unwrap();
+        fs::write(
+            classify.join("classification.tsv"),
+            "family_id\tlabel\tdecided_by\nfam-1#Unknown\tSINE/tRNA\trelative\nfam-2#Unknown\tUnknown\tcascade\n",
+        )
+        .unwrap();
+        let rm_out = dir.path().join("x.out");
+        fs::write(&rm_out, OUT).unwrap();
+        let overrides = dir.path().join("relabels.tsv");
+        fs::write(
+            &overrides,
+            "sample\tfamily_id\tlabel\tnew_label\tsource\tpurity\tlabelled_neighbours\n\
+             sp/acc\tfam-1#Unknown\tSINE/tRNA\tDNA/hAT\tgroup\t1.00\t5\n\
+             other/acc\tfam-2#Unknown\tUnknown\tLTR/Gypsy\tgroup\t1.00\t5\n",
+        )
+        .unwrap();
+        let s = relabel(&RelabelConfig {
+            classify_dir: classify,
+            rm_out,
+            genome_sizes: None,
+            overrides: Some(overrides),
+            sample: Some("sp/acc".into()),
+            output_dir: dir.path().join("out"),
+        })
+        .unwrap();
+        assert_eq!(s.overridden_families, 1);
+        assert_eq!(s.unknown_resolved_by["discover"], 100);
+        assert_eq!(s.unknown_resolved_to["DNA"], 100);
+        assert_eq!(s.bp_after["Unknown"], 100);
+        assert!(!s.bp_after.contains_key("SINE"));
     }
 
     #[test]
