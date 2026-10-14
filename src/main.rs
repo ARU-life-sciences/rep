@@ -16,6 +16,7 @@ fn main() -> Result<()> {
         Some("refdb") => rep::cli::run_refdb(),
         Some("discover") => rep::cli::run_discover(),
         Some("relatives") => rep::cli::run_relatives(),
+        Some("relabel") => rep::cli::run_relabel(),
         _ => pipeline(),
     };
     match result {

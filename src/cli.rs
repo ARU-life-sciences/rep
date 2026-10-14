@@ -803,6 +803,42 @@ fn discover_command() -> clap::Command {
         .arg(num("min-purity", "0.75"))
 }
 
+/// Parse and run `rep relabel ...`.
+pub fn run_relabel() -> Result<()> {
+    use clap::{Arg, Command};
+    let m = Command::new("relabel")
+        .about("Rewrite a RepeatMasker .out with `rep classify` labels; base pairs per class before and after.")
+        .arg(
+            Arg::new("classify")
+                .long("classify")
+                .required(true)
+                .help("`rep classify` output directory (classification.tsv)")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(Arg::new("rm-out").long("rm-out").required(true).value_parser(value_parser!(PathBuf)))
+        .arg(
+            Arg::new("genome-sizes")
+                .long("genome-sizes")
+                .help("Sequence lengths (.sizes or .fai), for percentages of the genome")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf)))
+        .try_get_matches_from(std::env::args_os().skip(1))
+        .unwrap_or_else(|e| e.exit());
+    let path = |n: &str| m.get_one::<PathBuf>(n).cloned().expect("required by clap");
+    let s = crate::classify::relabel(&crate::classify::RelabelConfig {
+        classify_dir: path("classify"),
+        rm_out: path("rm-out"),
+        genome_sizes: m.get_one::<PathBuf>("genome-sizes").cloned(),
+        output_dir: path("out"),
+    })?;
+    eprintln!(
+        "Relabelled {} of {} hits; Unknown {} bp -> {} bp",
+        s.relabelled_hits, s.hits, s.unknown_bp_before, s.unknown_bp_after
+    );
+    Ok(())
+}
+
 /// Parse and run `rep relatives ...`.
 pub fn run_relatives() -> Result<()> {
     use clap::{Arg, Command};

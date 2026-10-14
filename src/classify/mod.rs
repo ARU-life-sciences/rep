@@ -14,6 +14,7 @@ mod homology;
 mod library;
 mod model;
 mod pipeline;
+mod relabel;
 mod relatives;
 mod rmout;
 mod structure;
@@ -39,6 +40,9 @@ pub use model::{Classifier, ModelCall, CLASSIFIER_SCHEMA};
 pub use pipeline::{
     run_classify, run_classify_with_runner, ClassifyConfig, ClassifyResult, ClassifySummary,
     DecidedBy, FamilyClassification, SCHEMA_VERSION,
+};
+pub use relabel::{
+    relabel, RelabelConfig, RelabelSummary, RELABELLED_OUT, SUMMARY_JSON, SUMMARY_TSV,
 };
 pub use relatives::RelativeCall;
 pub use rmout::{copy_evidence_from_rm, load_genome, read_rm_out, RmHit};
