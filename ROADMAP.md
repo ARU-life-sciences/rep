@@ -110,7 +110,20 @@ The plan is to keep every evidence module and replace the cascade with one score
       model_probability and model_confidence (high ≥0.99, medium ≥0.9, low ≥0.7, else none) to
       `classification.tsv`, with agreement against the cascade in `summary.json`. The cascade's decision
       is unchanged. Rust and Python inference agree to 7e-5 (TSV rounding).
-- [ ] M8d default switch per class once it beats the cascade
+- [x] M8d the model decides where it beats the cascade (`scripts/classifier/switch_report.py`): its call
+      replaces the cascade's at ≥0.7, except that the cascade keeps its non-TE calls, its calls backed
+      by a blastx hit in their own class, and families the model calls Retroposon or nonTE. Held out:
+      libraries 83.8%/0.927 → 85.5%/0.932 (calls/agreement), curated consensi 80.8%/0.986 →
+      95.7%/0.989; LTR recall on curated 0.715 → 0.958, RC 0.61 → 0.71 and SINE 0.57 → 0.66 on
+      libraries for 1–2 points of precision; Retroposon and nonTE unchanged (the unrestricted switch
+      cost them 16 and 3–7 points of precision). Over the 559 Ensembl libraries (v5) the switch mostly
+      relabels weak nucleotide-only cascade calls (DNA→RC 3,691, LINE→SINE 1,433, LTR→RC 830), where a
+      30-family review sides with the RepeatModeler label (which the model never sees) 21–28 times;
+      the model's LINE→RC calls were wrong where the cascade had a LINE protein hit, which the rule
+      now protects. It resolves few Unknowns (1.4k at ≥0.9 of 985k the cascade leaves): those need
+      new evidence, not a new decision rule. `classification.tsv` gains `decided_by` (the cascade's
+      label stays in the evidence, `model:<label>@p;cascade:<label>`); features.tsv still records the
+      cascade's call, so training data is unaffected.
 
 ## Responsibility boundary
 

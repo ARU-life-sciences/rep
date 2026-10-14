@@ -6,6 +6,11 @@
 //! (simple repeats, satellites, RNA and host genes) take precedence, otherwise
 //! the model picks the class and the superfamily comes from the best homology
 //! hit within that class.
+//!
+//! Which call is final (M8d, `scripts/classifier/switch_report.py`): the model's
+//! at [`LOW`] or above, except that the cascade keeps its non-TE calls, its calls
+//! backed by a protein hit in their own class, and families the model calls
+//! Retroposon or nonTE (held out, the model was worse than the cascade there).
 
 use std::fs;
 use std::path::Path;
@@ -13,7 +18,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    decide::{is_non_te, Disposition, DispositionKind},
+    decide::{is_non_te, Confidence, Disposition, DispositionKind},
     domains::DomainEvidence,
     features::{group, numeric_header, FEATURES_SCHEMA},
     homology::HomologySummary,
@@ -27,6 +32,8 @@ pub const CLASSIFIER_SCHEMA: &str = "rep.classifier.v1";
 const HIGH: f64 = 0.99;
 const MEDIUM: f64 = 0.9;
 const LOW: f64 = 0.7;
+/// Model classes that never replace the cascade's call.
+const KEEP_CASCADE: &[&str] = &["Retroposon", "nonTE"];
 
 #[derive(Deserialize)]
 struct TransformFile {
@@ -72,6 +79,9 @@ pub struct ModelCall {
     pub confidence: String,
     /// The cascade's non-TE call was kept instead of the model's.
     pub gated: bool,
+    /// The model's call replaces the cascade's (see the module docs).
+    #[serde(default)]
+    pub decides: bool,
 }
 
 fn invalid(msg: String) -> Error {
@@ -202,6 +212,7 @@ impl Classifier {
                 probability: 1.0,
                 confidence: cascade.confidence.as_str().into(),
                 gated: true,
+                decides: false,
             };
         }
         let p = self.probabilities(values);
@@ -217,8 +228,46 @@ impl Classifier {
             probability,
             confidence: band(probability).into(),
             gated: false,
+            decides: probability >= LOW
+                && !KEEP_CASCADE.contains(&class.as_str())
+                && !protein_backed(values, cascade),
         }
     }
+}
+
+/// The model's call as the family's disposition: its label and band, with the
+/// cascade's call kept as evidence. The disposition kind stays the cascade's.
+pub fn apply(mut d: Disposition, m: &ModelCall) -> Disposition {
+    d.evidence.push(format!(
+        "model:{}@{:.3};cascade:{}",
+        m.label, m.probability, d.label
+    ));
+    d.label = m.label.clone();
+    d.confidence = match m.confidence.as_str() {
+        "high" => Confidence::High,
+        "medium" => Confidence::Medium,
+        _ => Confidence::Low,
+    };
+    d
+}
+
+/// A cascade TE call with a protein (blastx) hit in its own class.
+fn protein_backed(values: &[Option<f64>], cascade: &Disposition) -> bool {
+    if !matches!(
+        cascade.kind,
+        DispositionKind::KnownTe | DispositionKind::Chimeric | DispositionKind::HostOrArtefact
+    ) {
+        return false;
+    }
+    let Some(class) = group(&cascade.label) else {
+        return false;
+    };
+    let column = format!("prot_bits_{class}");
+    numeric_header()
+        .iter()
+        .position(|h| *h == column)
+        .and_then(|i| values[i])
+        .is_some_and(|bits| bits > 0.0)
 }
 
 fn band(p: f64) -> &'static str {
@@ -276,7 +325,6 @@ fn label_within(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classify::decide::Confidence;
     use crate::classify::homology::ClassSupport;
 
     /// A two-class model on two features: protein DNA bits (log1p) and TSD length (optional).
@@ -376,6 +424,71 @@ mod tests {
     }
 
     #[test]
+    fn protein_backed_cascade_calls_and_kept_classes_are_not_replaced() {
+        let m = tiny();
+        let nothing = HomologySummary::default();
+        let domains = DomainEvidence::default();
+        // a LINE call without protein support: the confident DNA call decides
+        let line = disposition(DispositionKind::KnownTe, "LINE/RTE");
+        let c = m.call(
+            &values(400.0, Some(8.0)),
+            &line,
+            &nothing,
+            &nothing,
+            &domains,
+        );
+        assert!(c.decides);
+        let d = apply(line.clone(), &c);
+        assert_eq!((d.label.as_str(), d.confidence), ("DNA", Confidence::High));
+        assert_eq!(d.kind, DispositionKind::KnownTe);
+        assert!(d.evidence.iter().any(|e| e.ends_with("cascade:LINE/RTE")));
+        // a DNA call backed by a DNA protein hit stands
+        let dna = disposition(DispositionKind::KnownTe, "DNA/hAT");
+        assert!(
+            !m.call(
+                &values(400.0, Some(8.0)),
+                &dna,
+                &nothing,
+                &nothing,
+                &domains
+            )
+            .decides
+        );
+        // an unresolved family takes a confident call, but not an unconfident one
+        let none = disposition(DispositionKind::Unresolved, "Unknown");
+        assert!(
+            m.call(
+                &values(400.0, Some(8.0)),
+                &none,
+                &nothing,
+                &nothing,
+                &domains
+            )
+            .decides
+        );
+        // log1p(bits) = 1.5 puts the two classes level
+        let c = m.call(
+            &values(1.5f64.exp() - 1.0, None),
+            &none,
+            &nothing,
+            &nothing,
+            &domains,
+        );
+        assert!(c.probability < LOW && !c.decides, "{c:?}");
+        // the model's Retroposon and nonTE calls never decide
+        let mut kept = tiny();
+        kept.classes = vec!["Retroposon".into(), "nonTE".into()];
+        let c = kept.call(
+            &values(400.0, Some(8.0)),
+            &none,
+            &nothing,
+            &nothing,
+            &domains,
+        );
+        assert!(c.probability >= LOW && !c.decides);
+    }
+
+    #[test]
     fn cascade_non_te_calls_are_kept() {
         let m = tiny();
         for d in [
@@ -389,7 +502,7 @@ mod tests {
                 &HomologySummary::default(),
                 &DomainEvidence::default(),
             );
-            assert!(c.gated);
+            assert!(c.gated && !c.decides);
             assert_eq!(
                 (c.class.as_str(), c.label.as_str()),
                 ("nonTE", d.label.as_str())

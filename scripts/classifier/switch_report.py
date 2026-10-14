@@ -10,6 +10,9 @@
 2. What a switch would change in a `classify` batch run with the model (`model_*` columns):
    Unknowns the cascade leaves unresolved that the model calls, and cascade TE calls it relabels.
 3. A review sample of disagreements with their evidence (`--review`).
+
+The switch policy (`policy`): the cascade's non-TE calls stand, and so do its calls backed by a protein hit
+in their own class; otherwise the model decides at ≥ HYBRID unless it calls Retroposon or nonTE.
 """
 import argparse
 import collections
@@ -26,9 +29,19 @@ from fit import CLASSES, gate, target  # noqa: E402
 
 BANDS = [("high", 0.99), ("medium", 0.9), ("low", 0.7)]
 HYBRID = 0.7
+KEEP_CASCADE = ("Retroposon", "nonTE")  # model classes that never override the cascade
 CASCADE_CALLS = {"known_te", "chimeric"}
 REVIEW_COLUMNS = ["best_subject", "best_bitscore", "nucl_best_subject", "nucl_bitscore", "nucl_coverage",
                   "domain_architecture", "length", "tail", "tsd_length", "copy_loci"]
+
+
+def policy(prob, casc, prot_bits):
+    """Final class per family (-1 = no call); `prob` gated, `prot_bits` best protein bits per class."""
+    pred, conf = prob.argmax(1), prob.max(1)
+    keep = np.isin(pred, [CLASSES.index(c) for c in KEEP_CASCADE])
+    backed = (casc >= 0) & (prot_bits[np.arange(len(casc)), np.maximum(casc, 0)] > 0)
+    take = (conf >= HYBRID) & ~keep & ~backed & (casc != CLASSES.index("nonTE"))
+    return np.where(take, pred, casc)
 
 
 def held_out(path, title):
@@ -48,26 +61,41 @@ def held_out(path, title):
             cells.append(f"{(s & t).sum() / max(1, s.sum()):.3f}/{(s & t).sum() / t.sum():.3f}")
         print(f"{c:<11}{t.sum():>8,}" + "".join(f"{x:>{16 if i == 0 else 18}}" for i, x in enumerate(cells)))
     # hybrid: the model's call at >= HYBRID, else the cascade's (which may abstain)
-    hyb = np.where(conf >= HYBRID, pred, casc)
-    print(f"hybrid (model at ≥{HYBRID}, else cascade) against the cascade:")
-    for name, calls in (("cascade", casc), ("hybrid", hyb)):
+    variants = {"cascade": casc, "hybrid": np.where(conf >= HYBRID, pred, casc)}
+    if "prot_bits" in d.files:
+        variants["policy"] = policy(p, casc, d["prot_bits"])
+    print(f"hybrid: the model at ≥{HYBRID}, else the cascade; policy: the hybrid, but cascade non-TE calls, "
+          f"protein-backed cascade calls and model {'/'.join(KEEP_CASCADE)} calls keep the cascade")
+    for name, calls in variants.items():
         called = calls >= 0
         print(f"  {name:<8} calls {called.mean():.1%}, agreement {(calls[called] == y[called]).mean():.3f}")
-    print(f"{'class':<11}{'cascade P/R':>16}{'hybrid P/R':>16}")
+    print(f"{'class':<11}" + "".join(f"{f'{n} P/R':>18}" for n in variants))
     for k, c in enumerate(CLASSES):
         t = y == k
         if t.any():
             print(f"{c:<11}" + "".join(
-                f"{f'{((v == k) & t).sum() / max(1, (v == k).sum()):.3f}/{((v == k) & t).sum() / t.sum():.3f}':>16}"
-                for v in (casc, hyb)))
+                f"{f'{((v == k) & t).sum() / max(1, (v == k).sum()):.3f}/{((v == k) & t).sum() / t.sum():.3f}':>18}"
+                for v in variants.values()))
 
 
 def batch_rows(results):
+    """classification.tsv rows with the species and, from features.tsv, `prot_bits` per class."""
     for path in sorted(glob.glob(os.path.join(results, "*", "*", "classification.tsv"))):
         species = path.split(os.sep)[-3]
+        bits = {}
+        for f in csv.DictReader(open(os.path.join(os.path.dirname(path), "features.tsv")), delimiter="\t"):
+            bits[f["family_id"]] = {c: float(f.get(f"prot_bits_{c}") or 0) for c in CLASSES}
         for r in csv.DictReader(open(path), delimiter="\t"):
             r["species"] = species
+            r["prot_bits"] = bits.get(r["family_id"], {})
             yield r
+
+
+def takes_model(r, cc):
+    """`policy` for one batch row: does the model's call replace the cascade's?"""
+    mc = r["model_class"]
+    return (float(r["model_probability"]) >= HYBRID and mc not in KEEP_CASCADE and cc != "nonTE"
+            and not (cc and r["prot_bits"].get(cc, 0) > 0))
 
 
 def cascade_class(r):
@@ -84,12 +112,17 @@ def switch_effects(results, review_path, per_pair, seed):
     samples = collections.defaultdict(list)
     rng = random.Random(seed)
     seen = collections.Counter()
+    switched = collections.Counter()     # (cascade class or "none", model class, band) under the policy
+    families = 0
     for r in batch_rows(results):
+        families += 1
         if not r.get("model_class"):
             continue
         band = r["model_confidence"]
         mc = r["model_class"]
         cc = cascade_class(r)
+        if takes_model(r, cc) and mc != cc:
+            switched[(cc or "none", mc, band)] += 1
         if r["original_label"].startswith("Unknown"):
             total_unknown += 1
             if cc is None:
@@ -122,12 +155,19 @@ def switch_effects(results, review_path, per_pair, seed):
     for (cc, mc), n in pairs.most_common(20):
         hi = relabel[(cc, mc, "high")]
         print(f"  {cc:<11}-> {mc:<11}{n:>8,}  (high {hi:,})")
+    print(f"\n== the policy's switches ({sum(switched.values()):,} of {families:,} families; "
+          "cascade class or none -> model class, by band):")
+    pairs = collections.Counter()
+    for (cc, mc, b), n in switched.items():
+        pairs[(cc, mc)] += n
+    for (cc, mc), n in pairs.most_common(20):
+        print(f"  {cc:<11}-> {mc:<11}{n:>8,}  " + "  ".join(f"{b} {switched[(cc, mc, b)]:,}" for b, _ in BANDS))
     if review_path:
         with open(review_path, "w") as fh:
             cols = ["species", "family_id", "original_label", "disposition", "label", "confidence",
                     "model_label", "model_probability", "model_confidence"] + REVIEW_COLUMNS
             print("\t".join(cols), file=fh)
-            for (cc, mc), rows in sorted(samples.items(), key=lambda kv: -pairs[kv[0]]):
+            for (cc, mc), rows in sorted(samples.items(), key=lambda kv: -len(kv[1])):
                 for r in rows:
                     print("\t".join(r.get(c, "") for c in cols), file=fh)
         print(f"\nreview sample ({per_pair} per class pair): {review_path}")

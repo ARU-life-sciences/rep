@@ -199,6 +199,15 @@ def cascade_call(ids):
     return np.array([one(r) for r in ids])
 
 
+def prot_bits(columns, num):
+    """Best blastx bits per class (0 for none; nonTE has no protein column), for the M8d switch policy."""
+    out = np.zeros((len(num), len(CLASSES)))
+    for k, c in enumerate(CLASSES):
+        if f"prot_bits_{c}" in columns:
+            out[:, k] = np.nan_to_num(num[:, columns.index(f"prot_bits_{c}")])
+    return out
+
+
 def clade_folds(info, k):
     """Assign orders to k folds greedily by size, so each fold holds out whole orders."""
     sizes = collections.Counter(order for _, _, (order, _, _) in info)
@@ -288,6 +297,7 @@ def evaluate(args):
     report(y[lib], prob[lib], casc[lib], "library families, held out by order")
     if args.save:
         np.savez_compressed(args.save, y=y[lib], prob=prob[lib], cascade=casc[lib], classes=CLASSES,
+                            prot_bits=prot_bits(columns, num[lib]),
                             family=[r[0] for r, l in zip(ids, lib) if l],
                             species=[sp for (s, sp, _), l in zip(info, lib) if l],
                             order=[o for (s, _, (o, _, _)), l in zip(info, lib) if l])
@@ -312,6 +322,7 @@ def refdb_eval(args, columns, num, ids, y, info, casc):
     report(y[r], prob[r], casc[r], "curated consensi, held out by cluster fold")
     if args.save:
         np.savez_compressed(args.save.replace(".npz", "") + "_curated.npz", y=y[r], prob=prob[r], cascade=casc[r],
+                            prot_bits=prot_bits(columns, num[r]),
                             classes=CLASSES, family=[x[0] for x, k in zip(ids, r) if k],
                             fold=rfold[r])
 

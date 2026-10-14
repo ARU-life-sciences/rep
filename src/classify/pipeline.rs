@@ -26,7 +26,7 @@ use super::{
         HomologyBackend, HomologySummary, ProteinHit,
     },
     library::{read_library, LibraryFamily},
-    model::{Classifier, ModelCall},
+    model::{self, Classifier, ModelCall},
     rmout::{copy_evidence_from_rm, load_genome, read_rm_out},
     structure::{analyse, StructuralEvidence, StructureParams},
     taxonomy::canonical_class,
@@ -188,6 +188,9 @@ pub struct FamilyClassification {
     pub structure: StructuralEvidence,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelCall>,
+    /// The cascade's label where the model's call replaced it in `disposition`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cascade_label: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -202,7 +205,8 @@ pub struct ClassifySummary {
     pub unclassified_subject_hits: usize,
     pub label_agreement: BTreeMap<String, usize>,
     /// The learned classifier against the cascade: `agree`, `disagree`, `gated_non_te`,
-    /// `model_only_<confidence>` where the cascade made no call.
+    /// `model_only_<confidence>` where the cascade made no call, and `decided` where
+    /// the model's call replaced the cascade's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_agreement: BTreeMap<String, usize>,
     pub commands: Vec<Vec<String>>,
@@ -453,18 +457,7 @@ pub fn run_classify_with_runner(
             || domains.novel.is_some();
         disposition =
             respect_original_label(disposition, family.label.as_deref(), te_coding_evidence);
-        let label_agreement = family
-            .label
-            .as_deref()
-            .filter(|_| !family.is_unknown())
-            .map(|original| {
-                if canonical_class(original) == canonical_class(&disposition.label) {
-                    "agree".to_owned()
-                } else {
-                    "disagree".to_owned()
-                }
-            });
-        // features for a learned classifier: protein sources kept apart
+        // features for a learned classifier, from the cascade's call: protein sources kept apart
         let (hmm_hits, blastx_hits): (Vec<&ProteinHit>, Vec<&ProteinHit>) =
             family_hits(&hits, &hits_by_family, &family.id)
                 .into_iter()
@@ -496,6 +489,25 @@ pub fn run_classify_with_runner(
                 &domains,
             )
         });
+        let mut cascade_label = None;
+        if let Some(m) = model
+            .as_ref()
+            .filter(|m| m.decides && m.label != disposition.label)
+        {
+            cascade_label = Some(disposition.label.clone());
+            disposition = model::apply(disposition, m);
+        }
+        let label_agreement = family
+            .label
+            .as_deref()
+            .filter(|_| !family.is_unknown())
+            .map(|original| {
+                if canonical_class(original) == canonical_class(&disposition.label) {
+                    "agree".to_owned()
+                } else {
+                    "disagree".to_owned()
+                }
+            });
         families.push(FamilyClassification {
             family_id: family.id.clone(),
             name: family.name.clone(),
@@ -508,6 +520,7 @@ pub fn run_classify_with_runner(
             copies,
             structure,
             model,
+            cascade_label,
         });
     }
 
@@ -939,7 +952,7 @@ fn write_outputs(
          copy_loci\tcopy_full_length\tcopy_identity\tgenome_bp\ttsd_length\ttsd_motif\ttsd_support\tflank_similarity\thelitron_ends\thelitron_ends_null\t\
          ltr_length\tltr_identity\ttir_length\ttir_identity\ttail\ttandem_period\t\
          tandem_identity\tlongest_orf_aa\tn_orfs\tgc\tevidence\twarnings\t\
-         model_class\tmodel_label\tmodel_probability\tmodel_confidence\n",
+         model_class\tmodel_label\tmodel_probability\tmodel_confidence\tdecided_by\n",
     );
     for f in families {
         let best = f.homology.best();
@@ -948,7 +961,7 @@ fn write_outputs(
         let opt = |v: Option<String>| v.unwrap_or_default();
         writeln!(
             tsv,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             f.family_id,
             f.original_label.as_deref().unwrap_or(""),
             s.length,
@@ -996,6 +1009,7 @@ fn write_outputs(
             opt(f.model.as_ref().map(|m| m.label.clone())),
             opt(f.model.as_ref().map(|m| format!("{:.4}", m.probability))),
             opt(f.model.as_ref().map(|m| m.confidence.clone())),
+            if f.cascade_label.is_some() { "model" } else { "cascade" },
         )
         .expect("writing to a String cannot fail");
     }
@@ -1076,7 +1090,8 @@ fn summarise_run(
                 f.disposition.kind,
                 DispositionKind::KnownTe | DispositionKind::Chimeric
             ) {
-                if canonical_class(&f.disposition.label) == canonical_class(&m.label) {
+                let cascade = f.cascade_label.as_ref().unwrap_or(&f.disposition.label);
+                if canonical_class(cascade) == canonical_class(&m.label) {
                     "agree".to_owned()
                 } else {
                     "disagree".to_owned()
@@ -1085,6 +1100,9 @@ fn summarise_run(
                 format!("model_only_{}", m.confidence)
             };
             *model_agreement.entry(key).or_insert(0) += 1;
+            if f.cascade_label.is_some() {
+                *model_agreement.entry("decided".to_owned()).or_insert(0) += 1;
+            }
         }
         *by_disposition
             .entry(f.disposition.kind.as_str().to_owned())
@@ -1491,6 +1509,8 @@ mod tests {
         assert_eq!(col("model_class"), "RC");
         assert_eq!(col("model_label"), "RC/Helitron");
         assert_eq!(col("model_confidence"), "high");
+        // the model agrees with the cascade, so the cascade's call stands
+        assert_eq!(col("decided_by"), "cascade");
         let summary: ClassifySummary =
             serde_json::from_slice(&fs::read(dir.path().join("out/summary.json")).unwrap())
                 .unwrap();
