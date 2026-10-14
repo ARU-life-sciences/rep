@@ -12,7 +12,8 @@
 3. A review sample of disagreements with their evidence (`--review`).
 
 The switch policy (`policy`): the cascade's non-TE calls stand, and so do its calls backed by a protein hit
-in their own class; otherwise the model decides at ≥ HYBRID unless it calls Retroposon or nonTE.
+in their own class; otherwise the model decides at ≥ HYBRID (≥ UNKNOWN where the cascade made no call) unless
+it calls Retroposon or nonTE.
 """
 import argparse
 import collections
@@ -28,7 +29,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fit import CLASSES, gate, target  # noqa: E402
 
 BANDS = [("high", 0.99), ("medium", 0.9), ("low", 0.7)]
-HYBRID = 0.7
+HYBRID = 0.7      # where the cascade made a TE call
+UNKNOWN = 0.9     # where it made none
 KEEP_CASCADE = ("Retroposon", "nonTE")  # model classes that never override the cascade
 CASCADE_CALLS = {"known_te", "chimeric"}
 REVIEW_COLUMNS = ["best_subject", "best_bitscore", "nucl_best_subject", "nucl_bitscore", "nucl_coverage",
@@ -40,7 +42,7 @@ def policy(prob, casc, prot_bits):
     pred, conf = prob.argmax(1), prob.max(1)
     keep = np.isin(pred, [CLASSES.index(c) for c in KEEP_CASCADE])
     backed = (casc >= 0) & (prot_bits[np.arange(len(casc)), np.maximum(casc, 0)] > 0)
-    take = (conf >= HYBRID) & ~keep & ~backed & (casc != CLASSES.index("nonTE"))
+    take = (conf >= np.where(casc >= 0, HYBRID, UNKNOWN)) & ~keep & ~backed & (casc != CLASSES.index("nonTE"))
     return np.where(take, pred, casc)
 
 
@@ -65,7 +67,8 @@ def held_out(path, title):
     if "prot_bits" in d.files:
         variants["policy"] = policy(p, casc, d["prot_bits"])
     print(f"hybrid: the model at ≥{HYBRID}, else the cascade; policy: the hybrid, but cascade non-TE calls, "
-          f"protein-backed cascade calls and model {'/'.join(KEEP_CASCADE)} calls keep the cascade")
+          f"protein-backed cascade calls and model {'/'.join(KEEP_CASCADE)} calls keep the cascade, and the model "
+          f"needs ≥{UNKNOWN} where the cascade made no call")
     for name, calls in variants.items():
         called = calls >= 0
         print(f"  {name:<8} calls {called.mean():.1%}, agreement {(calls[called] == y[called]).mean():.3f}")
@@ -94,7 +97,7 @@ def batch_rows(results):
 def takes_model(r, cc):
     """`policy` for one batch row: does the model's call replace the cascade's?"""
     mc = r["model_class"]
-    return (float(r["model_probability"]) >= HYBRID and mc not in KEEP_CASCADE and cc != "nonTE"
+    return (float(r["model_probability"]) >= (HYBRID if cc else UNKNOWN) and mc not in KEEP_CASCADE and cc != "nonTE"
             and not (cc and r["prot_bits"].get(cc, 0) > 0))
 
 

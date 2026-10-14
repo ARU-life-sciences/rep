@@ -8,9 +8,11 @@
 //! hit within that class.
 //!
 //! Which call is final (M8d, `scripts/classifier/switch_report.py`): the model's
-//! at [`LOW`] or above, except that the cascade keeps its non-TE calls, its calls
-//! backed by a protein hit in their own class, and families the model calls
-//! Retroposon or nonTE (held out, the model was worse than the cascade there).
+//! at [`LOW`] or above where the cascade made a TE call, and at [`MEDIUM`] or above
+//! where it made none (so Unknowns are only labelled at medium or high), except that
+//! the cascade keeps its non-TE calls, its calls backed by a protein hit in their
+//! own class, and families the model calls Retroposon or nonTE (held out, the model
+//! was worse than the cascade there).
 
 use std::fs;
 use std::path::Path;
@@ -228,7 +230,12 @@ impl Classifier {
             probability,
             confidence: band(probability).into(),
             gated: false,
-            decides: probability >= LOW
+            decides: probability
+                >= if cascade_te_call(cascade) {
+                    LOW
+                } else {
+                    MEDIUM
+                }
                 && !KEEP_CASCADE.contains(&class.as_str())
                 && !protein_backed(values, cascade),
         }
@@ -251,12 +258,17 @@ pub fn apply(mut d: Disposition, m: &ModelCall) -> Disposition {
     d
 }
 
+/// The cascade called a class (non-TE calls are gated before this matters).
+fn cascade_te_call(d: &Disposition) -> bool {
+    matches!(
+        d.kind,
+        DispositionKind::KnownTe | DispositionKind::Chimeric | DispositionKind::HostOrArtefact
+    )
+}
+
 /// A cascade TE call with a protein (blastx) hit in its own class.
 fn protein_backed(values: &[Option<f64>], cascade: &Disposition) -> bool {
-    if !matches!(
-        cascade.kind,
-        DispositionKind::KnownTe | DispositionKind::Chimeric | DispositionKind::HostOrArtefact
-    ) {
+    if !cascade_te_call(cascade) {
         return false;
     }
     let Some(class) = group(&cascade.label) else {
@@ -475,6 +487,13 @@ mod tests {
             &domains,
         );
         assert!(c.probability < LOW && !c.decides, "{c:?}");
+        // at p = 0.8 the model fixes an unsupported cascade call but leaves an Unknown alone
+        // (logit gap 4z - 1 = ln 4 at standardised bits z, log1p(bits) = 1 + 2z)
+        let z = (4f64.ln() + 1.0) / 4.0;
+        let low = values((1.0 + 2.0 * z).exp() - 1.0, None);
+        let c = m.call(&low, &none, &nothing, &nothing, &domains);
+        assert!((c.probability - 0.8).abs() < 1e-9 && !c.decides, "{c:?}");
+        assert!(m.call(&low, &line, &nothing, &nothing, &domains).decides);
         // the model's Retroposon and nonTE calls never decide
         let mut kept = tiny();
         kept.classes = vec!["Retroposon".into(), "nonTE".into()];
