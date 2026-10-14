@@ -290,6 +290,12 @@ be right first.
       RC/DNA confusions in partial matches). In Rust on the same libraries with per-order relatives from
       v5 (605k references, 53 orders): 55.8% of all Unknowns resolved (29.2k medium, 15.6k low;
       DNA 20.1k, LINE 11.6k, RC 5.3k, LTR 4.1k, SINE 3.1k), at a median 669 s per library against 617 s.
+- [x] Long-monomer satellites from copy arrangement: an uncalled family whose RepeatMasker insertions
+      average ≥ 3× its consensus length (≥ 10 loci) is a `satellite` (`tandem_array:<ratio>`). Its consensus
+      holds one or two monomers of 300–1,000 bp, so it shows no periodicity (the largest open family,
+      *Bombylius discolor* rnd-6_family-1284, was "LTR/Unknown": two copies of an 803 bp unit, 186 loci over
+      24.7 Mb). High-confidence known TEs: ratio 99th percentile 1.01, 0.07% above 1.5. On the 40 libraries:
+      48 open Unknowns (76 Mb, 5% of open bp) and 2 of ~4,100 open RepeatModeler-labelled TE families.
 - [ ] Negative filters: organellar inserts, multi-copy host genes. Rfam (cmscan, all 4,227 models,
       E ≤ 1e-5) does not help: 0.6% of RepeatModeler SINE/tRNA families hit a tRNA model (heads too
       degraded), and uncalled Unknowns hit no tRNA, 5S, 7SL, rRNA or snRNA model (0.3% hit plant miRNA

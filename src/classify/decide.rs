@@ -552,8 +552,41 @@ pub fn apply_copy_evidence(mut d: Disposition, c: &CopyEvidence, length: usize) 
         }
         _ => {}
     }
+    if let Some(ratio) = tandem_array_ratio(c, length) {
+        if matches!(
+            d.kind,
+            DispositionKind::Unresolved
+                | DispositionKind::InterspersedRepeat
+                | DispositionKind::NovelCandidate
+        ) {
+            d.evidence
+                .push(format!("was:{}:{}", d.kind.as_str(), d.label));
+            d.kind = DispositionKind::Satellite;
+            d.label = "Satellite".into();
+            d.confidence = Confidence::Medium;
+            d.evidence
+                .push(format!("tandem_array:{ratio:.1}x_consensus_per_locus"));
+        }
+    }
     d
 }
+
+/// Genomic copies arranged in tandem arrays: RepeatMasker insertions that
+/// average at least [`TANDEM_ARRAY_RATIO`] times the consensus length. A
+/// satellite with a long monomer (hundreds of bp) holds only one or two
+/// monomers in its consensus, so the consensus shows no periodicity, but its
+/// copies do. Over 40 Ensembl libraries, 0.07% of high-confidence known TEs
+/// exceed even 1.5 (99th percentile 1.01).
+fn tandem_array_ratio(c: &CopyEvidence, length: usize) -> Option<f64> {
+    if c.genome_bp == 0 || c.loci < 10 || length == 0 {
+        return None;
+    }
+    let ratio = c.genome_bp as f64 / c.loci as f64 / length as f64;
+    (ratio >= TANDEM_ARRAY_RATIO).then_some(ratio)
+}
+
+/// See [`tandem_array_ratio`].
+const TANDEM_ARRAY_RATIO: f64 = 3.0;
 
 /// Keep a specific non-TE label from the original classifier (tRNA, rRNA,
 /// satellite, ...) unless TE proteins or domains contradict it.
@@ -991,6 +1024,58 @@ mod tests {
             evidence: vec![],
             warnings: vec![],
         }
+    }
+
+    #[test]
+    fn tandem_arrays_of_uncalled_families_are_satellites() {
+        // 186 insertions covering 24.7 Mb of a 1,678 bp consensus (Bombylius discolor)
+        let array = CopyEvidence {
+            genome_bp: 24_694_216,
+            ..copies(186, 12, None, 0.3)
+        };
+        let d = apply_copy_evidence(
+            disposition(
+                DispositionKind::NovelCandidate,
+                "LTR/Unknown",
+                Confidence::Medium,
+            ),
+            &array,
+            1678,
+        );
+        assert_eq!(
+            (d.kind, d.label.as_str()),
+            (DispositionKind::Satellite, "Satellite")
+        );
+        assert!(d
+            .evidence
+            .contains(&"tandem_array:79.1x_consensus_per_locus".to_owned()));
+        assert!(d
+            .evidence
+            .contains(&"was:novel_candidate:LTR/Unknown".to_owned()));
+        // an unresolved family is promoted to a dispersed repeat first, then caught
+        let d = apply_copy_evidence(
+            disposition(DispositionKind::Unresolved, "Unknown", Confidence::Low),
+            &array,
+            1678,
+        );
+        assert_eq!(d.kind, DispositionKind::Satellite);
+        // TE calls stand, and dispersed copies (2x the consensus per locus) are no array
+        let d = apply_copy_evidence(
+            disposition(DispositionKind::KnownTe, "DNA/hAT", Confidence::High),
+            &array,
+            1678,
+        );
+        assert_eq!(d.kind, DispositionKind::KnownTe);
+        let dispersed = CopyEvidence {
+            genome_bp: 186 * 2 * 1678,
+            ..copies(186, 12, None, 0.3)
+        };
+        let d = apply_copy_evidence(
+            disposition(DispositionKind::Unresolved, "Unknown", Confidence::Low),
+            &dispersed,
+            1678,
+        );
+        assert_eq!(d.kind, DispositionKind::InterspersedRepeat);
     }
 
     #[test]
