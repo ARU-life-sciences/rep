@@ -277,7 +277,23 @@ be right first.
       Groups that are mostly simple/satellite/host members are no longer called novel (`non_te` column);
       cross-kingdom "novel" coding groups were host genes (7tm, actin, ribosomal S2, EGF), so
       v4 classify runs with `--host-domains`.
-- [ ] Negative filters: rRNA, tRNA and snRNA (Infernal and Rfam), organellar inserts, multi-copy host genes.
+- [x] Unknowns from related families (`classify` second pass, `rep relatives`). The 984k Unknowns that
+      the cascade and model leave uncalled (v5) have essentially no refdb homology (1% any nucleotide hit,
+      no protein or domain hits), are short (76% < 500 bp, 0.6% with an ORF ≥ 200 aa) and real
+      (81% with ≥ 5 full-length copies; 62 Gb of genome). Many are pieces of elements that RepeatModeler
+      split, or relatives of families called in related genomes. `classify` now searches uncalled Unknowns
+      (blastn) against the families the run called as TEs and against `--relatives <taxon>.fa`, which
+      `rep relatives --results <dir> --taxa <tsv> --rank order` writes from many runs (references: cascade
+      TE calls and model decisions, never relative-labelled families). The best match's label is taken,
+      medium confidence at ≥ 60% coverage, low below; `decided_by = relative`. Held out on labelled
+      families (40 libraries), agreement 0.93–0.99 at ≥ 60% coverage and 0.81–0.95 below (LINE/SINE and
+      RC/DNA confusions in partial matches). In Rust on the same libraries with per-order relatives from
+      v5 (605k references, 53 orders): 55.8% of all Unknowns resolved (29.2k medium, 15.6k low;
+      DNA 20.1k, LINE 11.6k, RC 5.3k, LTR 4.1k, SINE 3.1k), at a median 669 s per library against 617 s.
+- [ ] Negative filters: organellar inserts, multi-copy host genes. Rfam (cmscan, all 4,227 models,
+      E ≤ 1e-5) does not help: 0.6% of RepeatModeler SINE/tRNA families hit a tRNA model (heads too
+      degraded), and uncalled Unknowns hit no tRNA, 5S, 7SL, rRNA or snRNA model (0.3% hit plant miRNA
+      precursors, themselves often MITE-derived).
 - [ ] Per-candidate evidence report (alignment of members, domain maps, copy landscape).
 
 ### M5 – Feedback into masking (partly done)

@@ -14,6 +14,7 @@ mod homology;
 mod library;
 mod model;
 mod pipeline;
+mod relatives;
 mod rmout;
 mod structure;
 mod taxonomy;
@@ -37,8 +38,9 @@ pub use library::{read_library, split_label, LibraryFamily};
 pub use model::{Classifier, ModelCall, CLASSIFIER_SCHEMA};
 pub use pipeline::{
     run_classify, run_classify_with_runner, ClassifyConfig, ClassifyResult, ClassifySummary,
-    FamilyClassification, SCHEMA_VERSION,
+    DecidedBy, FamilyClassification, SCHEMA_VERSION,
 };
+pub use relatives::RelativeCall;
 pub use rmout::{copy_evidence_from_rm, load_genome, read_rm_out, RmHit};
 pub use structure::{
     analyse, orfs, Orf, StructuralEvidence, StructureParams, Tail, Tandem, TerminalRepeat,

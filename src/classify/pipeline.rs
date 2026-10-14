@@ -27,6 +27,7 @@ use super::{
     },
     library::{read_library, LibraryFamily},
     model::{self, Classifier, ModelCall},
+    relatives::{self, RelativeCall, LIBRARY_PREFIX},
     rmout::{copy_evidence_from_rm, load_genome, read_rm_out},
     structure::{analyse, StructuralEvidence, StructureParams},
     taxonomy::canonical_class,
@@ -54,6 +55,13 @@ pub struct ClassifyConfig {
     pub mosaics: Option<PathBuf>,
     /// Learned classifier (`classifier.json`) run beside the rule cascade.
     pub model: Option<PathBuf>,
+    /// Search Unknowns left uncalled against the families this run called as TEs.
+    pub library_relatives: bool,
+    /// TE-called families of related genomes (`name#label`), searched like the
+    /// library's own (`rep relatives` writes them per taxon).
+    pub relatives: Option<PathBuf>,
+    /// Coverage of an Unknown by its related family above which the call is medium confidence.
+    pub relative_medium_coverage: f64,
     /// Scan ORFs of families without TE protein evidence against all of
     /// `pfam` to recognise multicopy host genes.
     pub host_domains: bool,
@@ -89,6 +97,9 @@ impl ClassifyConfig {
             te_hmms: None,
             mosaics: None,
             model: None,
+            library_relatives: true,
+            relatives: None,
+            relative_medium_coverage: 0.6,
             host_domains: false,
             copies_dir: None,
             rm_out: None,
@@ -133,7 +144,7 @@ impl ClassifyConfig {
                 HomologyBackend::Diamond => "diamond",
             });
         }
-        if self.nucleotides.is_some() {
+        if self.nucleotides.is_some() || self.library_relatives || self.relatives.is_some() {
             tools.push("blastn");
         }
         if self.pfam.is_some() {
@@ -158,6 +169,7 @@ impl ClassifyConfig {
         let inputs = [
             Some(("library", &self.library)),
             self.proteins.as_ref().map(|p| ("proteins", p)),
+            self.relatives.as_ref().map(|p| ("relatives", p)),
             self.nucleotides.as_ref().map(|p| ("nucleotides", p)),
             self.pfam.as_ref().map(|p| ("pfam", p)),
             self.te_hmms.as_ref().map(|p| ("te_hmms", p)),
@@ -188,9 +200,33 @@ pub struct FamilyClassification {
     pub structure: StructuralEvidence,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelCall>,
-    /// The cascade's label where the model's call replaced it in `disposition`.
+    /// The cascade's label where the model's or a related family's call replaced it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cascade_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relative: Option<RelativeCall>,
+    pub decided_by: DecidedBy,
+}
+
+/// Which step made the family's final call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecidedBy {
+    Cascade,
+    /// The learned classifier ([`ModelCall::decides`]).
+    Model,
+    /// A related TE-called family ([`relatives`]).
+    Relative,
+}
+
+impl DecidedBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cascade => "cascade",
+            Self::Model => "model",
+            Self::Relative => "relative",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -209,6 +245,9 @@ pub struct ClassifySummary {
     /// the model's call replaced the cascade's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_agreement: BTreeMap<String, usize>,
+    /// Unknowns labelled from related families, by confidence.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub resolved_by_relatives: BTreeMap<String, usize>,
     pub commands: Vec<Vec<String>>,
 }
 
@@ -277,10 +316,28 @@ pub fn run_classify_with_runner(
                 .map(|f| (f.id.as_str(), None, f.seq.as_slice())),
         )?;
         if let Some(proteins) = &c.proteins {
-            hits = search_library(c, &queries, proteins, false, runner, &mut commands)?;
+            hits = search_library(
+                c,
+                &queries,
+                proteins,
+                false,
+                "proteins",
+                None,
+                runner,
+                &mut commands,
+            )?;
         }
         if let Some(nucleotides) = &c.nucleotides {
-            nucl_hits = search_library(c, &queries, nucleotides, true, runner, &mut commands)?;
+            nucl_hits = search_library(
+                c,
+                &queries,
+                nucleotides,
+                true,
+                "nucleotides",
+                None,
+                runner,
+                &mut commands,
+            )?;
         }
     }
     // hits inside an element embedded in a reference of another class
@@ -520,11 +577,19 @@ pub fn run_classify_with_runner(
             copies,
             structure,
             model,
+            decided_by: if cascade_label.is_some() {
+                DecidedBy::Model
+            } else {
+                DecidedBy::Cascade
+            },
             cascade_label,
+            relative: None,
         });
     }
+    let relative_hits = resolve_from_relatives(c, &library, &mut families, runner, &mut commands)?;
 
     hits.append(&mut nucl_hits);
+    hits.extend(relative_hits);
     write_outputs(c, &library, &families, &hits)?;
     feature_rows.push(String::new());
     fs::write(c.output_dir.join("features.tsv"), feature_rows.join("\n"))?;
@@ -538,6 +603,124 @@ pub fn run_classify_with_runner(
         families,
         summary,
     })
+}
+
+/// Unknowns that neither the cascade nor the model called, against the
+/// families this run called as TEs and the `--relatives` of related genomes.
+/// Returns the hits, for `unclassified_subjects.tsv` accounting.
+fn resolve_from_relatives(
+    c: &ClassifyConfig,
+    library: &[LibraryFamily],
+    families: &mut [FamilyClassification],
+    runner: &dyn CommandRunner,
+    commands: &mut Vec<Vec<String>>,
+) -> Result<Vec<ProteinHit>> {
+    let open = |f: &FamilyClassification| {
+        f.decided_by == DecidedBy::Cascade
+            && f.original_label
+                .as_deref()
+                .is_none_or(|l| l.starts_with("Unknown"))
+            && matches!(
+                f.disposition.kind,
+                DispositionKind::Unresolved
+                    | DispositionKind::InterspersedRepeat
+                    | DispositionKind::NovelCandidate
+            )
+    };
+    let reference = |f: &FamilyClassification| {
+        f.decided_by == DecidedBy::Model
+            || (matches!(
+                f.disposition.kind,
+                DispositionKind::KnownTe | DispositionKind::Chimeric
+            ) && !is_non_te(&f.disposition.label)
+                && f.disposition.label != "Unknown")
+    };
+    if !(c.library_relatives || c.relatives.is_some()) || !families.iter().any(open) {
+        return Ok(Vec::new());
+    }
+    let seqs = library
+        .iter()
+        .map(|f| (f.id.as_str(), f.seq.as_slice()))
+        .collect::<HashMap<_, _>>();
+    let query_path = c.output_dir.join("relatives_queries.fa");
+    write_fasta(
+        &query_path,
+        families
+            .iter()
+            .filter(|f| open(f))
+            .map(|f| (f.family_id.as_str(), None, seqs[f.family_id.as_str()])),
+    )?;
+    let mut hits = Vec::new();
+    let refs = families
+        .iter()
+        .filter(|f| reference(f))
+        .map(|f| {
+            (
+                format!("{LIBRARY_PREFIX}{}#{}", f.name, f.disposition.label),
+                f,
+            )
+        })
+        .collect::<Vec<_>>();
+    if c.library_relatives && !refs.is_empty() {
+        let path = c.output_dir.join("library_relatives.fa");
+        write_fasta(
+            &path,
+            refs.iter()
+                .map(|(id, f)| (id.as_str(), None, seqs[f.family_id.as_str()])),
+        )?;
+        hits = search_library(
+            c,
+            &query_path,
+            &path,
+            true,
+            "library_relatives",
+            Some(&c.output_dir),
+            runner,
+            commands,
+        )?;
+        fs::remove_file(&path).ok();
+        fs::remove_dir_all(c.output_dir.join("library_relatives.blastn")).ok();
+    }
+    if let Some(path) = &c.relatives {
+        // indexed beside the relatives file, which serves many runs
+        let index_dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+            .join(".rep_index")
+            .join(path.file_name().unwrap_or_default());
+        hits.extend(search_library(
+            c,
+            &query_path,
+            path,
+            true,
+            "relatives",
+            Some(&index_dir),
+            runner,
+            commands,
+        )?);
+    }
+    fs::remove_file(&query_path).ok();
+    let mut by_family: HashMap<String, Vec<&ProteinHit>> = HashMap::new();
+    for h in &hits {
+        by_family.entry(h.query_id.clone()).or_default().push(h);
+    }
+    for f in families.iter_mut() {
+        if !open(f) {
+            continue;
+        }
+        let Some(family_hits) = by_family.get(&f.family_id) else {
+            continue;
+        };
+        let summary = summarise(family_hits, c.thresholds.nucl_min_bitscore);
+        if let Some(r) = relatives::call(&summary, c.relative_medium_coverage) {
+            f.cascade_label = Some(f.disposition.label.clone());
+            f.disposition = relatives::apply(f.disposition.clone(), &r);
+            f.decided_by = DecidedBy::Relative;
+            f.relative = Some(r);
+        }
+    }
+    Ok(hits)
 }
 
 fn family_hits<'a>(
@@ -554,11 +737,16 @@ fn family_hits<'a>(
 /// Search the queries against a protein (BLASTX/DIAMOND) or nucleotide
 /// (BLASTN) reference library. Indexes are reused while the library file is
 /// unchanged.
+/// `kind` names the hits file and the index; `index_dir` overrides where the
+/// index is cached.
+#[allow(clippy::too_many_arguments)]
 fn search_library(
     c: &ClassifyConfig,
     queries: &Path,
     library: &Path,
     nucleotide: bool,
+    kind: &str,
+    index_dir: Option<&Path>,
     runner: &dyn CommandRunner,
     commands: &mut Vec<Vec<String>>,
 ) -> Result<Vec<ProteinHit>> {
@@ -566,11 +754,6 @@ fn search_library(
     let mut run = |mut cmd: Command, what: &str| -> Result<std::process::Output> {
         commands.push(command_line(&cmd));
         run_checked(runner, &mut cmd, what)
-    };
-    let kind = if nucleotide {
-        "nucleotides"
-    } else {
-        "proteins"
     };
     let library = if library.extension().is_some_and(|e| e == "gz") {
         let mut cmd = Command::new("gzip");
@@ -582,7 +765,10 @@ fn search_library(
     } else {
         library.to_path_buf()
     };
-    let index_dir = c.index_dir.clone().unwrap_or_else(|| c.output_dir.clone());
+    let index_dir = index_dir
+        .map(Path::to_path_buf)
+        .or_else(|| c.index_dir.clone())
+        .unwrap_or_else(|| c.output_dir.clone());
     fs::create_dir_all(&index_dir)?;
     let backend = if nucleotide {
         "blastn"
@@ -1009,7 +1195,7 @@ fn write_outputs(
             opt(f.model.as_ref().map(|m| m.label.clone())),
             opt(f.model.as_ref().map(|m| format!("{:.4}", m.probability))),
             opt(f.model.as_ref().map(|m| m.confidence.clone())),
-            if f.cascade_label.is_some() { "model" } else { "cascade" },
+            f.decided_by.as_str(),
         )
         .expect("writing to a String cannot fail");
     }
@@ -1082,7 +1268,13 @@ fn summarise_run(
     let mut by_label = BTreeMap::new();
     let mut label_agreement = BTreeMap::new();
     let mut model_agreement = BTreeMap::new();
+    let mut resolved_by_relatives = BTreeMap::new();
     for f in families {
+        if let Some(r) = &f.relative {
+            *resolved_by_relatives
+                .entry(r.confidence.as_str().to_owned())
+                .or_insert(0) += 1;
+        }
         if let Some(m) = &f.model {
             let key = if m.gated {
                 "gated_non_te".to_owned()
@@ -1090,7 +1282,10 @@ fn summarise_run(
                 f.disposition.kind,
                 DispositionKind::KnownTe | DispositionKind::Chimeric
             ) {
-                let cascade = f.cascade_label.as_ref().unwrap_or(&f.disposition.label);
+                let cascade = match f.decided_by {
+                    DecidedBy::Model => f.cascade_label.as_ref().unwrap_or(&f.disposition.label),
+                    _ => &f.disposition.label,
+                };
                 if canonical_class(cascade) == canonical_class(&m.label) {
                     "agree".to_owned()
                 } else {
@@ -1100,7 +1295,7 @@ fn summarise_run(
                 format!("model_only_{}", m.confidence)
             };
             *model_agreement.entry(key).or_insert(0) += 1;
-            if f.cascade_label.is_some() {
+            if f.decided_by == DecidedBy::Model {
                 *model_agreement.entry("decided".to_owned()).or_insert(0) += 1;
             }
         }
@@ -1122,6 +1317,7 @@ fn summarise_run(
         unclassified_subject_hits: hits.iter().filter(|h| h.class.is_none()).count(),
         label_agreement,
         model_agreement,
+        resolved_by_relatives,
         commands,
     }
 }
@@ -1153,13 +1349,17 @@ fn cli_error(message: impl Into<String>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classify::decide::Confidence;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Output};
 
     /// Pretends to be gzip/makeblastdb/blastx: writes canned BLASTX hits to `-out`.
+    #[derive(Default)]
     struct MockRunner {
         hits: String,
         nucl_hits: String,
+        /// For the second pass's searches (`*relatives_hits.tsv`).
+        relative_hits: String,
     }
 
     impl CommandRunner for MockRunner {
@@ -1171,7 +1371,13 @@ mod tests {
             if let Some(i) = args.iter().position(|a| a == "-out") {
                 if args.iter().any(|a| a == "-query") {
                     let blastn = cmd.get_program().to_string_lossy().ends_with("blastn");
-                    let hits = if blastn { &self.nucl_hits } else { &self.hits };
+                    let hits = if args[i + 1].ends_with("relatives_hits.tsv") {
+                        &self.relative_hits
+                    } else if blastn {
+                        &self.nucl_hits
+                    } else {
+                        &self.hits
+                    };
                     fs::write(&args[i + 1], hits)?;
                 }
             }
@@ -1217,6 +1423,7 @@ mod tests {
         let runner = MockRunner {
             hits: hits.into(),
             nucl_hits: String::new(),
+            ..Default::default()
         };
         let mut config = ClassifyConfig::new(lib, proteins, dir.path().join("out"));
         config.threads = 2;
@@ -1259,7 +1466,86 @@ mod tests {
             5
         );
         assert_eq!(result.summary.by_disposition["known_te"], 1);
-        assert_eq!(result.summary.commands.len(), 2);
+        // blastx, then makeblastdb and blastn for the second pass against fam1
+        assert_eq!(result.summary.commands.len(), 4);
+    }
+
+    #[test]
+    fn uncalled_unknowns_take_the_label_of_a_related_called_family() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = format!(
+            ">fam1#Unknown\n{}\n>fam5#Unknown\n{}\n>fam6#Unknown\n{}\n",
+            random(3000, 1),
+            random(1500, 5),
+            random(1000, 6),
+        );
+        let lib = dir.path().join("consensi.fa.classified");
+        fs::write(&lib, library).unwrap();
+        let proteins = dir.path().join("proteins.fa");
+        fs::write(&proteins, ">Gypsy-1_xx\nMKV\n").unwrap();
+        let relatives = dir.path().join("Lepidoptera.fa");
+        fs::write(&relatives, ">moth|fam9#DNA/hAT\nACGT\n").unwrap();
+        let runner = MockRunner {
+            hits: "fam1#Unknown\tGypsy-1_xx\t3000\t600\t40.0\t300\t1\t1200\t1\t400\t1e-40\t350\n"
+                .into(),
+            // fam5 is 80% covered by fam1 from this library; fam6 30% by a relative
+            relative_hits: "fam5#Unknown\tlibrary|fam1#LTR/Gypsy\t1500\t3000\t85.0\t1200\t\
+                            1\t1200\t1\t1200\t1e-100\t900\n\
+                            fam6#Unknown\tmoth|fam9#DNA/hAT\t1000\t900\t80.0\t300\t\
+                            1\t300\t1\t300\t1e-30\t150\n"
+                .into(),
+            ..Default::default()
+        };
+        let mut config = ClassifyConfig::new(lib, proteins, dir.path().join("out"));
+        config.relatives = Some(relatives);
+        let r = run_classify_with_runner(&config, &runner).unwrap();
+        let calls = r
+            .families
+            .iter()
+            .map(|f| {
+                (
+                    f.name.as_str(),
+                    f.disposition.label.as_str(),
+                    f.disposition.confidence,
+                    f.decided_by,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calls,
+            vec![
+                (
+                    "fam1",
+                    "LTR/Gypsy",
+                    r.families[0].disposition.confidence,
+                    DecidedBy::Cascade
+                ),
+                ("fam5", "LTR/Gypsy", Confidence::Medium, DecidedBy::Relative),
+                ("fam6", "DNA/hAT", Confidence::Low, DecidedBy::Relative),
+            ]
+        );
+        assert_eq!(r.families[1].cascade_label.as_deref(), Some("Unknown"));
+        assert!(r.families[1]
+            .disposition
+            .evidence
+            .iter()
+            .any(|e| e == "relative:library|fam1#LTR/Gypsy@900,0.80;was:Unknown"));
+        // the relatives' index is cached beside them; the library's own is not kept
+        assert!(dir
+            .path()
+            .join(".rep_index/Lepidoptera.fa/relatives.blastn/stamp")
+            .is_file());
+        let out = dir.path().join("out");
+        assert!(!out.join("library_relatives.blastn").exists());
+        let relabelled = fs::read_to_string(out.join("library.reclassified.fa")).unwrap();
+        assert!(relabelled.contains(">fam5#LTR/Gypsy\n"));
+        let table = fs::read_to_string(out.join("classification.tsv")).unwrap();
+        assert_eq!(
+            table.lines().nth(2).unwrap().split('\t').next_back(),
+            Some("relative")
+        );
+        assert_eq!(r.summary.resolved_by_relatives["medium"], 1);
+        assert_eq!(r.summary.resolved_by_relatives["low"], 1);
     }
 
     #[test]
@@ -1273,6 +1559,7 @@ mod tests {
             hits: "famA#LTR/Copia\tCopia-1_xx\t3000\t600\t40.0\t300\t1\t1200\t1\t400\t1e-40\t350\n"
                 .into(),
             nucl_hits: String::new(),
+            ..Default::default()
         };
         let mut config = ClassifyConfig::new(lib, proteins, dir.path().join("out"));
         config.all_families = true;
@@ -1302,6 +1589,7 @@ mod tests {
                 "sine1#Unknown\tB1_Mm#SINE/7SL\t300\t140\t88.0\t280\t1\t280\t1\t140\t1e-60\t320\n\
                         rrna#Unknown\t5S#rRNA\t1800\t1800\t99.0\t1700\t1\t1700\t1\t1700\t0\t3000\n"
                     .into(),
+            ..Default::default()
         };
         let mut config = ClassifyConfig::new(lib, PathBuf::new(), dir.path().join("out"));
         config.proteins = None;
@@ -1429,6 +1717,7 @@ mod tests {
             nucl_hits: "hel#Unknown\tKolobokE-1#DNA/Kolobok\t400\t5826\t85.0\t190\t\
                         101\t290\t5370\t5559\t1e-40\t250\n"
                 .into(),
+            ..Default::default()
         };
         let mut config = ClassifyConfig::new(lib, PathBuf::new(), dir.path().join("out"));
         config.proteins = None;
@@ -1490,6 +1779,7 @@ mod tests {
             nucl_hits: "fam#Unknown\tHel-1#RC/Helitron\t400\t400\t90.0\t380\t\
                         11\t390\t11\t390\t1e-80\t600\n"
                 .into(),
+            ..Default::default()
         };
         let mut config = ClassifyConfig::new(lib, PathBuf::new(), dir.path().join("out"));
         config.proteins = None;

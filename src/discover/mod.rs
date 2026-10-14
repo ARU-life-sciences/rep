@@ -25,6 +25,9 @@ use std::{
 use bio::io::fasta;
 use serde::Serialize;
 
+mod relatives;
+pub use relatives::{relatives_file, write_relatives, RelativesConfig, RelativesSummary};
+
 use crate::{
     classify::{is_non_te, orfs, split_label, top_level},
     command_runner::run_checked,
@@ -121,7 +124,7 @@ pub struct Accuracy {
 pub fn run_discover(c: &DiscoverConfig, runner: &dyn CommandRunner) -> Result<DiscoverSummary> {
     fs::create_dir_all(&c.output_dir)?;
     let taxa = match &c.taxa {
-        Some(p) => read_taxa(p)?,
+        Some(p) => read_taxa(p, "class")?,
         None => HashMap::new(),
     };
     let (members, samples) = pool(c, &taxa)?;
@@ -313,15 +316,7 @@ fn invert(assignment: &[usize]) -> HashMap<usize, Vec<usize>> {
 /// Pool every family of every classify output into one nucleotide FASTA and
 /// one ORF protein FASTA with compact IDs (`m<index>`, `m<index>_o<k>`).
 fn pool(c: &DiscoverConfig, taxa: &HashMap<String, String>) -> Result<(Vec<Member>, usize)> {
-    let mut dirs = walkdir::WalkDir::new(&c.results)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_name() == "classification.tsv")
-        .filter_map(|e| e.path().parent().map(Path::to_path_buf))
-        .filter(|d| d.join("queries.fa").is_file())
-        .collect::<Vec<_>>();
-    dirs.sort();
+    let dirs = classify_dirs(&c.results);
     let mut nucl = BufWriter::new(fs::File::create(c.output_dir.join("pooled.fa"))?);
     let mut prot = BufWriter::new(fs::File::create(c.output_dir.join("pooled_orfs.faa"))?);
     let mut members = Vec::new();
@@ -357,6 +352,20 @@ fn pool(c: &DiscoverConfig, taxa: &HashMap<String, String>) -> Result<(Vec<Membe
     nucl.flush()?;
     prot.flush()?;
     Ok((members, dirs.len()))
+}
+
+/// `rep classify` output directories under `results` (`classification.tsv` with `queries.fa`).
+fn classify_dirs(results: &Path) -> Vec<PathBuf> {
+    let mut dirs = walkdir::WalkDir::new(results)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name() == "classification.tsv")
+        .filter_map(|e| e.path().parent().map(Path::to_path_buf))
+        .filter(|d| d.join("queries.fa").is_file())
+        .collect::<Vec<_>>();
+    dirs.sort();
+    dirs
 }
 
 fn read_classification(path: &Path) -> Result<HashMap<String, HashMap<String, String>>> {
@@ -428,13 +437,16 @@ fn member_from_row(
 
 /// `scientific_name` → `class` (falling back to `phylum`), keyed by the
 /// lower-case, underscore-separated species name used for directories.
-fn read_taxa(path: &Path) -> Result<HashMap<String, String>> {
+/// Species (lower case, `_` for spaces) to their taxon at `rank` (a column
+/// such as `class` or `order`), falling back to the phylum when it is empty.
+fn read_taxa(path: &Path, rank: &str) -> Result<HashMap<String, String>> {
     let mut reader = csv::ReaderBuilder::new().delimiter(b'\t').from_path(path)?;
     let headers = reader.headers()?.clone();
     let col = |n: &str| headers.iter().position(|h| h.trim_matches('"') == n);
-    let (Some(name), Some(class)) = (col("scientific_name"), col("class")) else {
+    let (Some(name), Some(class)) = (col("scientific_name").or_else(|| col("species")), col(rank))
+    else {
         return Err(cli_error(format!(
-            "{} needs scientific_name and class columns",
+            "{} needs scientific_name (or species) and {rank} columns",
             path.display()
         )));
     };

@@ -436,6 +436,19 @@ fn classify_command() -> clap::Command {
                 .value_parser(value_parser!(PathBuf)),
         )
         .arg(
+            Arg::new("relatives")
+                .long("relatives")
+                .help("TE-called families of related genomes (`rep relatives`): Unknowns nothing else \
+                       explains take the label of the best match")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("no-library-relatives")
+                .long("no-library-relatives")
+                .help("Do not search uncalled Unknowns against this library's own TE-called families")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("te-hmms")
                 .long("te-hmms")
                 .help("Pressed superfamily profile HMMs (default with --refdb: <db>/hmms/te_hmms.hmm)")
@@ -498,6 +511,8 @@ where
     if let Some(model) = m.get_one::<PathBuf>("model") {
         config.model = Some(model.clone());
     }
+    config.relatives = m.get_one::<PathBuf>("relatives").cloned();
+    config.library_relatives = !m.get_flag("no-library-relatives");
     config.copies_dir = m.get_one::<PathBuf>("copies").cloned();
     config.rm_out = m.get_one::<PathBuf>("rm-out").cloned();
     config.genome = m.get_one::<PathBuf>("genome").cloned();
@@ -776,6 +791,44 @@ fn discover_command() -> clap::Command {
         .arg(num("protein-identity", "0.3"))
         .arg(num("protein-coverage", "0.5"))
         .arg(num("min-purity", "0.75"))
+}
+
+/// Parse and run `rep relatives ...`.
+pub fn run_relatives() -> Result<()> {
+    use clap::{Arg, Command};
+    let m = Command::new("relatives")
+        .about("Pool the families `rep classify` runs called as TEs, one FASTA per taxon, for `classify --relatives`.")
+        .arg(
+            Arg::new("results")
+                .long("results")
+                .required(true)
+                .help("Directory searched for classify outputs (classification.tsv + queries.fa)")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf)))
+        .arg(
+            Arg::new("taxa")
+                .long("taxa")
+                .help("TSV with a scientific_name (or species) column and the --rank column; without it, one file")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(Arg::new("rank").long("rank").default_value("order").help("Taxonomy column that groups genomes"))
+        .try_get_matches_from(std::env::args_os().skip(1))
+        .unwrap_or_else(|e| e.exit());
+    let path = |n: &str| m.get_one::<PathBuf>(n).cloned().expect("required by clap");
+    let s = crate::discover::write_relatives(&crate::discover::RelativesConfig {
+        results: path("results"),
+        taxa: m.get_one::<PathBuf>("taxa").cloned(),
+        rank: m.get_one::<String>("rank").expect("defaulted").clone(),
+        output_dir: path("out"),
+    })?;
+    eprintln!(
+        "{} reference families from {} samples in {} taxa",
+        s.per_taxon.values().sum::<usize>(),
+        s.samples,
+        s.per_taxon.len()
+    );
+    Ok(())
 }
 
 /// Parse and run `rep discover ...`.
