@@ -24,7 +24,11 @@ use std::{
 use bio::io::fasta;
 use serde::Serialize;
 
-use crate::{copy_recovery::family_dir_name, Error, ErrorKind, Result};
+use crate::{
+    classify::structure::{self, StructureParams},
+    copy_recovery::family_dir_name,
+    Error, ErrorKind, Result,
+};
 
 pub const REFINED: &str = "refined.fa";
 pub const TABLE: &str = "curation.tsv";
@@ -47,6 +51,13 @@ pub struct CurateParams {
     pub anchor_fraction: f64,
     /// A refined consensus shorter than this fraction of the query is rejected.
     pub min_length_fraction: f64,
+    /// Shortest inverted terminal repeat the extended ends snap to, and its
+    /// identity. Stricter than `rep classify`: a snapped end would otherwise
+    /// manufacture the TIR evidence classify then reads.
+    pub snap_min_tir: usize,
+    pub snap_min_identity: f64,
+    /// Terminal-repeat search windows and identity (shared with `rep classify`).
+    pub structure: StructureParams,
 }
 
 impl Default for CurateParams {
@@ -59,6 +70,9 @@ impl Default for CurateParams {
             min_copies: 3,
             anchor_fraction: 0.2,
             min_length_fraction: 0.8,
+            snap_min_tir: 25,
+            snap_min_identity: 0.9,
+            structure: StructureParams::default(),
         }
     }
 }
@@ -273,17 +287,61 @@ fn refine(rows: &[Row], query_len: usize, p: &CurateParams) -> std::result::Resu
         seq.push(s.major);
         columns.push(c);
     }
+    let mut added_5 = columns.iter().take_while(|&&c| c < a0).count();
+    let mut added_3 = columns.iter().rev().take_while(|&&c| c > a1).count();
+    let (trim_5, trim_3) = snap_to_terminal_repeat(&seq, added_5, added_3, p);
+    seq.truncate(seq.len() - trim_3);
+    seq.drain(..trim_5);
+    columns.truncate(columns.len() - trim_3);
+    columns.drain(..trim_5);
+    added_5 -= trim_5;
+    added_3 -= trim_3;
     if (seq.len() as f64) < p.min_length_fraction * query_len as f64 {
         return Err("shorter_than_query");
     }
-    let added_5 = columns.iter().take_while(|&&c| c < a0).count();
-    let added_3 = columns.iter().rev().take_while(|&&c| c > a1).count();
     Ok(Refined {
         seq,
         columns,
         added_5,
         added_3,
     })
+}
+
+/// Bases to trim from the extended ends so that the consensus ends with a
+/// terminal repeat (direct, LTR-like, tried first; then inverted, TIR-like)
+/// whose outer edges lie in the added sequence. Copies of an element nested in
+/// or next to another repeat can agree past its true ends; its own terminal
+/// repeats mark them.
+fn snap_to_terminal_repeat(
+    seq: &[u8],
+    added_5: usize,
+    added_3: usize,
+    p: &CurateParams,
+) -> (usize, usize) {
+    if added_5 + added_3 == 0 {
+        return (0, 0);
+    }
+    let slack = added_5.max(added_3);
+    let s = &p.structure;
+    for (inverted, window, min_length, identity) in [
+        (false, s.ltr_window, s.ltr_min_length, s.terminal_min_identity),
+        (true, s.tir_window, p.snap_min_tir, p.snap_min_identity),
+    ] {
+        let window = window + slack;
+        if let Some(r) = structure::terminal_repeat(
+            seq,
+            inverted,
+            window,
+            min_length,
+            identity,
+            slack,
+        ) {
+            if r.five_prime_offset <= added_5 && r.three_prime_offset <= added_3 {
+                return (r.five_prime_offset, r.three_prime_offset);
+            }
+        }
+    }
+    (0, 0)
 }
 
 /// Where a copy matches the refined consensus: its first and last consensus

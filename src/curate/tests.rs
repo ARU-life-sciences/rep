@@ -206,3 +206,38 @@ fn too_few_copies_or_a_short_result_keep_the_query() {
     assert_eq!(refined[0].1, element);
     assert!(dir.path().join("out/families/fam1_Unknown/copies.tsv").is_file());
 }
+
+#[test]
+fn extended_ends_snap_to_the_elements_own_inverted_repeats() {
+    // a TIR element whose copies all sit beside the same 120 bp of another
+    // repeat, so they agree past its 3' end; its TIRs mark the real end
+    let tir = random(30, 6);
+    let body = random(400, 7);
+    let element = [tir.clone(), body, bio::alphabets::dna::revcomp(&tir)].concat();
+    let neighbour = random(120, 8);
+    let copies = (0..8)
+        .map(|i| {
+            [
+                random(300, 100 + i as u64),
+                mutate(&element, 23, i),
+                mutate(&neighbour, 19, i),
+                random(300, 200 + i as u64),
+            ]
+            .concat()
+        })
+        .collect::<Vec<_>>();
+    let rows = copies
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Row {
+            locus_id: i.to_string(),
+            seq: s.clone(),
+            first: 0,
+            last: s.len() - 1,
+            core: (400, 659),
+        })
+        .collect::<Vec<_>>();
+    let r = refine(&rows, 260, &CurateParams::default()).unwrap();
+    assert_eq!(r.seq, element);
+    assert_eq!((r.added_5, r.added_3), (100, 100));
+}

@@ -17,7 +17,7 @@ mod pipeline;
 mod relabel;
 mod relatives;
 mod rmout;
-mod structure;
+pub(crate) mod structure;
 mod taxonomy;
 
 pub use copies::{expected_tsd, read_copy_evidence, CopyEvidence, CopyParams, Tsd};
