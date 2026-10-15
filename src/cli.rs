@@ -1010,6 +1010,59 @@ pub fn run_annotate() -> Result<()> {
     Ok(())
 }
 
+/// Parse and run `rep curate ...`.
+pub fn run_curate() -> Result<()> {
+    use clap::{Arg, Command};
+    let m = Command::new("curate")
+        .about("Refine family consensi from the copies `rep recover-copies` found: boundaries extended outward from the query while copies agree, gap-aware majority consensus. Writes refined.fa and a copies directory for `rep classify --copies`.")
+        .arg(
+            Arg::new("copies")
+                .long("copies")
+                .required(true)
+                .help("`rep recover-copies` output directory")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(Arg::new("out").long("out").default_value("rep_curate").value_parser(value_parser!(PathBuf)))
+        .arg(Arg::new("threads").long("threads").default_value("1").value_parser(value_parser!(usize)))
+        .arg(
+            Arg::new("window")
+                .long("window")
+                .default_value("25")
+                .help("Consensus columns averaged when testing whether copies still agree")
+                .value_parser(value_parser!(usize)),
+        )
+        .arg(
+            Arg::new("floor")
+                .long("floor")
+                .default_value("0.5")
+                .help("Stop extending where fewer copies than this share the majority base")
+                .value_parser(value_parser!(f64)),
+        )
+        .arg(
+            Arg::new("drop")
+                .long("drop")
+                .default_value("0.25")
+                .help("...or where that fraction drops by this much (copies ending together)")
+                .value_parser(value_parser!(f64)),
+        )
+        .try_get_matches_from(std::env::args_os().skip(1))
+        .unwrap_or_else(|e| e.exit());
+    let mut c = crate::curate::CurateConfig::new(
+        m.get_one::<PathBuf>("copies").cloned().expect("required by clap"),
+        m.get_one::<PathBuf>("out").cloned().expect("has a default"),
+    );
+    c.threads = *m.get_one::<usize>("threads").expect("has a default");
+    c.params.window = *m.get_one::<usize>("window").expect("has a default");
+    c.params.agreement_floor = *m.get_one::<f64>("floor").expect("has a default");
+    c.params.agreement_drop = *m.get_one::<f64>("drop").expect("has a default");
+    let s = crate::curate::run_curate(&c)?;
+    eprintln!(
+        "{} families: {} refined ({} bp added), kept as queried: {:?}",
+        s.families, s.refined, s.bases_added, s.kept
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

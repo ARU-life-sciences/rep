@@ -18,6 +18,7 @@ fn main() -> Result<()> {
         Some("relatives") => rep::cli::run_relatives(),
         Some("relabel") => rep::cli::run_relabel(),
         Some("annotate") => rep::cli::run_annotate(),
+        Some("curate") => rep::cli::run_curate(),
         _ => pipeline(),
     };
     match result {
