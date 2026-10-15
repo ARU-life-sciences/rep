@@ -1,4 +1,5 @@
 // Public modules used across the CLI tool
+pub mod annotate; // TE fragments in any sequence (CENSOR replacement)
 pub mod classify;
 pub mod cli; // Command-line argument parsing
 pub mod command_runner;

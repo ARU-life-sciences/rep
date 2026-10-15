@@ -833,7 +833,7 @@ fn search_library(
 /// then renamed into place, so concurrent runs sharing `index_dir` never see
 /// a partial index. (BLAST databases cannot be renamed file by file because
 /// they record their own name.)
-fn ensure_index(
+pub(crate) fn ensure_index(
     index_dir: &Path,
     name: &str,
     file: &str,
@@ -902,7 +902,7 @@ fn ensure_index(
 }
 
 /// Identifies a library version for index reuse: path, size and modification time.
-fn library_stamp(path: &Path) -> Result<String> {
+pub(crate) fn library_stamp(path: &Path) -> Result<String> {
     let meta = fs::metadata(path)?;
     let modified = meta
         .modified()?

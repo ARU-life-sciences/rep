@@ -17,6 +17,7 @@ fn main() -> Result<()> {
         Some("discover") => rep::cli::run_discover(),
         Some("relatives") => rep::cli::run_relatives(),
         Some("relabel") => rep::cli::run_relabel(),
+        Some("annotate") => rep::cli::run_annotate(),
         _ => pipeline(),
     };
     match result {

@@ -940,6 +940,61 @@ pub fn run_discover() -> Result<()> {
     Ok(())
 }
 
+/// Parse and run `rep annotate ...`.
+pub fn run_annotate() -> Result<()> {
+    use clap::{Arg, ArgAction, Command};
+    let m = Command::new("annotate")
+        .about("Find and classify TE fragments in any sequence (contigs, BACs, transcripts, regions): GFF3, BED, a fragment table, masked FASTA and per-class summaries.")
+        .arg(Arg::new("input").required(true).help("FASTA to annotate").value_parser(value_parser!(PathBuf)))
+        .arg(
+            Arg::new("refdb")
+                .long("refdb")
+                .help("Built `rep refdb` database: nucleotide and protein references")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("library")
+                .long("library")
+                .action(ArgAction::Append)
+                .help("Further nucleotide library with name#Class/Superfamily headers (a classified rep library, a `rep relatives` file); repeatable")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(Arg::new("out").long("out").default_value("rep_annotate").value_parser(value_parser!(PathBuf)))
+        .arg(Arg::new("threads").long("threads").default_value("1").value_parser(value_parser!(usize)))
+        .arg(Arg::new("hard-mask").long("hard-mask").action(ArgAction::SetTrue).help("Mask with N instead of lower case"))
+        .arg(Arg::new("no-proteins").long("no-proteins").action(ArgAction::SetTrue).help("Skip the BLASTX round"))
+        .arg(Arg::new("no-novel").long("no-novel").action(ArgAction::SetTrue).help("Skip the search for terminal-repeat pairs"))
+        .try_get_matches_from(std::env::args_os().skip(1))
+        .unwrap_or_else(|e| e.exit());
+    let mut c = crate::annotate::AnnotateConfig::new(
+        m.get_one::<PathBuf>("input")
+            .cloned()
+            .expect("required by clap"),
+        m.get_one::<PathBuf>("out").cloned().expect("has a default"),
+    );
+    c.refdb = m.get_one::<PathBuf>("refdb").cloned();
+    c.libraries = m
+        .get_many::<PathBuf>("library")
+        .map(|v| v.cloned().collect())
+        .unwrap_or_default();
+    c.threads = *m.get_one::<usize>("threads").expect("has a default");
+    c.hard_mask = m.get_flag("hard-mask");
+    c.proteins = !m.get_flag("no-proteins");
+    c.novel = !m.get_flag("no-novel");
+    let s = crate::annotate::run_annotate(&c, &crate::RealCommandRunner)?;
+    eprintln!(
+        "{} sequences, {} bp: {} fragments in {} elements, {} bp masked ({:.1}%); {} candidate novel elements",
+        s.sequences,
+        s.total_bp,
+        s.fragments,
+        s.elements,
+        s.masked_bp,
+        100.0 * s.masked_bp as f64 / s.total_bp.max(1) as f64,
+        s.candidate_novel
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

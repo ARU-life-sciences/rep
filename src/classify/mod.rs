@@ -33,10 +33,11 @@ pub use features::{FEATURES_SCHEMA, FEATURE_CLASSES};
 pub use homology::{
     blastn_library_command, blastx_command, diamond_blastx_command, diamond_makedb_command,
     makeblastdb_nucleotide_command, makeblastdb_protein_command, parse_protein_hits, summarise,
-    ClassSupport, HomologyBackend, HomologySummary, ProteinHit,
+    ClassSupport, HomologyBackend, HomologySummary, ProteinHit, OUTFMT_FIELDS,
 };
 pub use library::{read_library, split_label, LibraryFamily};
 pub use model::{Classifier, ModelCall, CLASSIFIER_SCHEMA};
+pub(crate) use pipeline::{ensure_index, library_stamp};
 pub use pipeline::{
     run_classify, run_classify_with_runner, ClassifyConfig, ClassifyResult, ClassifySummary,
     DecidedBy, FamilyClassification, SCHEMA_VERSION,
@@ -47,6 +48,7 @@ pub use relabel::{
 pub use relatives::RelativeCall;
 pub use rmout::{copy_evidence_from_rm, load_genome, read_rm_out, RmHit};
 pub use structure::{
-    analyse, orfs, Orf, StructuralEvidence, StructureParams, Tail, Tandem, TerminalRepeat,
+    analyse, composition, orfs, tandem, Orf, StructuralEvidence, StructureParams, Tail, Tandem,
+    TerminalRepeat,
 };
 pub use taxonomy::{canonical_class, class_from_protein_name, top_level};
