@@ -252,12 +252,10 @@ pub fn repbase_legacy_label(keywords: &str, description: &str) -> Option<String>
         "LINE"
     } else if has("ltr") || text.contains("endogenous retrovirus") {
         "LTR"
-    } else if has("mite")
-        || has("transposase")
-        || text.contains("dna transposon")
-        || (w.iter().any(|x| x == "transposon" || x == "transposons")
-            && !w.iter().any(|x| x.contains("retro")))
-    {
+    } else if has("mite") || has("transposase") || text.contains("dna transposon") {
+        // not a bare "transposon": older entries use it for retrotransposons
+        // too (ROO, the roo LTR element, is a "transposable element ...
+        // transposon")
         "DNA"
     } else if has("trna") {
         "tRNA"
@@ -341,7 +339,12 @@ mod tests {
             ("Simple repeat.", "(CA)n repeat", Some("Simple_repeat")),
             ("non-LTR retrotransposon; X.", "", Some("LINE")),
             ("MITE; X.", "", Some("DNA")),
-            ("transposon; TZ86.", "maize transposon Tz86", Some("DNA")),
+            ("transposon; TZ86.", "maize transposon Tz86", None),
+            (
+                "Repetitive sequence; transposon; ROO.",
+                "Drosophila roo transposable element from 68C glue gene cluster.",
+                None,
+            ),
             ("retrotransposon; X.", "a retrotransposon", None),
             ("Repetitive sequence; UBX_DM.", "Drosophila repeat", None),
             (
