@@ -269,8 +269,10 @@ pub struct Ends {
 /// Refine a candidate's ends to an insertion signature, or reject it.
 /// Alignment ends are often a few bases short, so ends may move by up to
 /// `slack` bases; the longest TSD wins, then the smallest shift.
-/// - LTR pairs need a 4–6 bp TSD within 3 bp of the ends; TG...CA termini
-///   are reported.
+/// - LTR pairs need a 4–6 bp TSD and TG...CA termini at ends within 3 bp
+///   of the aligned ones. Nearly all LTR retrotransposons have both; on
+///   dm6 with Drosophila references held out, all three LTR pairs without
+///   the termini were neighbouring copies or unannotated sequence.
 /// - TIR pairs need a TSD of at least 5 bp within 2 bp of the ends (hAT,
 ///   Mutator, P), or exactly at the ends a TA (Tc1/mariner) or TTAA
 ///   (piggyBac). Shorter TSDs at shifted ends match by chance too often.
@@ -295,12 +297,15 @@ pub fn ends(seq: &[u8], kind: &str, start: usize, end: usize) -> Option<Ends> {
             let Some(k) = tsd(seq, s, e, min, max) else {
                 continue;
             };
+            let tg_ca = seq[s..].starts_with(b"TG") && seq[..e].ends_with(b"CA");
+            if kind == LTR_PAIR && !tg_ca {
+                continue;
+            }
             let shift = ds.unsigned_abs() as usize + de.unsigned_abs() as usize;
             if best
                 .as_ref()
                 .is_none_or(|(b, bs)| k > b.tsd || (k == b.tsd && shift < *bs))
             {
-                let tg_ca = seq[s..].starts_with(b"TG") && seq[..e].ends_with(b"CA");
                 best = Some((
                     Ends {
                         start: s,
@@ -461,6 +466,14 @@ mod tests {
             })
         );
         assert_eq!(ltr(b"ACGTA", 5), None, "beyond the slack");
+        // a TSD without TG...CA termini is not enough
+        let mut s = random(200, 24);
+        s.extend(b"ACGTA");
+        s.extend(random(2004, 25));
+        s.extend(b"ACGTA");
+        s.extend(random(200, 26));
+        let e = ends(&s, LTR_PAIR, 205, 2209);
+        assert!(e.as_ref().is_none_or(|e| e.tg_ca), "{e:?}");
         let tir = |tsd: &[u8]| {
             let mut s = random(100, 31);
             s.extend(tsd);

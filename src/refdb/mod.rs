@@ -101,6 +101,9 @@ pub struct BuildInfo {
     pub duplicates: usize,
     pub renamed: usize,
     pub unlabelled: usize,
+    /// Repbase entries left out (host genes), by reason.
+    #[serde(default)]
+    pub repbase_excluded: BTreeMap<String, usize>,
     pub fingerprint: String,
 }
 
@@ -437,6 +440,8 @@ pub fn build(db: &RefDb) -> Result<BuildInfo> {
             .collect::<Vec<_>>()
     };
     inputs.extend(local_with("accepted"));
+    let mut repbase_excluded: BTreeMap<String, usize> = BTreeMap::new();
+    let mut excluded_ids: std::collections::HashSet<String> = Default::default();
     for name in [DFAM_CURATED, DFAM_PEPTIDES, REPBASE] {
         let Some(release) = current.get(name) else {
             continue;
@@ -449,7 +454,14 @@ pub fn build(db: &RefDb) -> Result<BuildInfo> {
             .map(|f| db.root.join(f))
             .collect::<Vec<_>>();
         match name {
-            REPBASE => inputs.extend(read_repbase(&files, &tag)?),
+            REPBASE => {
+                let (records, excluded) = read_repbase(&files, &tag)?;
+                inputs.extend(records);
+                for (id, reason) in excluded {
+                    *repbase_excluded.entry(reason.to_owned()).or_default() += 1;
+                    excluded_ids.insert(id);
+                }
+            }
             DFAM_CURATED => inputs.extend(read_labelled_fasta(&files, SeqKind::Nucleotide, &tag)?),
             _ => inputs.extend(read_labelled_fasta(&files, SeqKind::Protein, &tag)?),
         }
@@ -458,6 +470,17 @@ pub fn build(db: &RefDb) -> Result<BuildInfo> {
         used_sources.push(format!("local@{}", local.len()));
     }
     inputs.extend(local_with("candidate"));
+    // Dfam carries some of the same old Repbase entries (FTZ_DM, FUSHI_DM),
+    // unlabelled and without a description: they go too
+    let before = inputs.len();
+    inputs.retain(|r| {
+        !(r.source != "local"
+            && excluded_ids.contains(&r.source_id)
+            && r.label.as_deref().is_none_or(|l| l == "Unknown"))
+    });
+    if inputs.len() < before {
+        repbase_excluded.insert("same_name_in_other_source".into(), before - inputs.len());
+    }
 
     // deduplicate on (kind, sequence) and give every kept record a unique ID
     let mut seen: HashMap<(SeqKind, String), String> = HashMap::new();
@@ -465,6 +488,7 @@ pub fn build(db: &RefDb) -> Result<BuildInfo> {
     let mut info = BuildInfo {
         built_at: now(),
         sources: used_sources,
+        repbase_excluded,
         ..Default::default()
     };
     let tmp = db.root.join("build.tmp");
@@ -564,8 +588,13 @@ pub fn build(db: &RefDb) -> Result<BuildInfo> {
     Ok(info)
 }
 
-fn read_repbase(files: &[PathBuf], tag: &str) -> Result<Vec<BuildRecord>> {
+/// Repbase records, and the IDs of entries left out with their reasons.
+fn read_repbase(
+    files: &[PathBuf],
+    tag: &str,
+) -> Result<(Vec<BuildRecord>, BTreeMap<String, &'static str>)> {
     let mut records = Vec::new();
+    let mut excluded = BTreeMap::new();
     for root in files {
         let mut paths = walkdir::WalkDir::new(root)
             .into_iter()
@@ -580,7 +609,14 @@ fn read_repbase(files: &[PathBuf], tag: &str) -> Result<Vec<BuildRecord>> {
             let entries = parse_embl(BufReader::new(fs::File::open(&path)?))
                 .map_err(|e| cli_error(format!("{}: {e}", path.display())))?;
             for entry in entries {
-                let label = repbase_label(&entry.keywords);
+                let label = repbase_label(&entry.keywords)
+                    .or_else(|| labels::repbase_legacy_label(&entry.keywords, &entry.description));
+                if let Some(reason) =
+                    labels::repbase_exclusion(&entry.keywords, &entry.description, label.as_deref())
+                {
+                    excluded.insert(entry.id.clone(), reason);
+                    continue;
+                }
                 for (i, protein) in entry.translations.iter().enumerate() {
                     records.push(BuildRecord {
                         id: format!("{}_{}p", entry.id, i + 1),
@@ -606,7 +642,7 @@ fn read_repbase(files: &[PathBuf], tag: &str) -> Result<Vec<BuildRecord>> {
             }
         }
     }
-    Ok(records)
+    Ok((records, excluded))
 }
 
 /// FASTA whose identifiers are `name#label` (Dfam RepeatMasker libraries, RepeatPeps).
@@ -834,6 +870,12 @@ KW   Nonautonomous; Transposable Element;
 SQ   Sequence 8 BP;
      ttttgggg   8
 //
+ID   FTZ_DM   repbase; DNA; DRO; 10 BP.
+DE   Drosophila melanogaster inverted repeat in ftz gene.
+KW   DMFTZ; FTZ_DM; Inverted repeat; Repetitive sequence.
+SQ   Sequence 10 BP;
+     gatcgatcgg   10
+//
 ";
 
     fn register(db: &RefDb, name: &str, version: &str, file: &str, contents: &str) {
@@ -864,7 +906,8 @@ SQ   Sequence 8 BP;
             DFAM_CURATED,
             "4.0",
             "lib.fa",
-            ">Gypsy-1_XX#LTR/Gypsy @Insecta\nACGTACGTACGT\n>Odd-1_XX#DNA/hAT\nAAAACCCC\n",
+            ">Gypsy-1_XX#LTR/Gypsy @Insecta\nACGTACGTACGT\n>Odd-1_XX#DNA/hAT\nAAAACCCC\n\
+             >FTZ_DM#Unknown @Drosophila\nGATCGATCGGAA\n",
         );
         let fa = dir.path().join("mine.fa");
         fs::write(
@@ -896,6 +939,14 @@ SQ   Sequence 8 BP;
             "Repbase Odd-1_XX clashes with a different Dfam sequence"
         );
         assert_eq!(info.unlabelled, 1);
+        // the host-gene repeat goes, and Dfam's unlabelled copy with it
+        assert_eq!(
+            info.repbase_excluded,
+            BTreeMap::from([
+                ("host_gene_context".to_owned(), 1),
+                ("same_name_in_other_source".to_owned(), 1)
+            ])
+        );
         assert_eq!(info.protein_records, 1);
         let nucl = fs::read_to_string(db.nucleotide_library()).unwrap();
         assert!(nucl.contains(">Gypsy-1_XX#LTR/Gypsy source=dfam-curated@4.0 [Insecta]\n"));

@@ -1,8 +1,8 @@
 //! Streaming parser for Repbase EMBL releases.
 //!
 //! Only the fields the reference database needs are kept: the identifier,
-//! keywords (which carry the Repbase classification), species, nucleotide
-//! sequence and any CDS protein translations.
+//! description and keywords (which carry the Repbase classification),
+//! species, nucleotide sequence and any CDS protein translations.
 
 use std::io::BufRead;
 
@@ -13,6 +13,8 @@ pub struct EmblEntry {
     pub id: String,
     /// `KW` lines joined with spaces, e.g. `Gypsy; LTR Retrotransposon; ...`.
     pub keywords: String,
+    /// `DE` lines joined with spaces.
+    pub description: String,
     pub species: Option<String>,
     pub seq: Vec<u8>,
     pub translations: Vec<String>,
@@ -65,6 +67,12 @@ pub fn parse_embl(mut reader: impl BufRead) -> Result<Vec<EmblEntry>> {
                 }
                 entry.keywords.push_str(value);
             }
+            "DE" => {
+                if !entry.description.is_empty() {
+                    entry.description.push(' ');
+                }
+                entry.description.push_str(value);
+            }
             "OS" if entry.species.is_none() => entry.species = Some(value.to_owned()),
             "SQ" => in_sequence = true,
             "FT" => {
@@ -101,6 +109,8 @@ mod tests {
     use super::*;
 
     const RECORD: &str = "ID   Gypsy-1_XX   repbase; DNA; INV; 30 BP.
+DE   Gypsy-1_XX, an LTR retrotransposon
+DE   from Testus.
 XX
 KW   Gypsy; LTR Retrotransposon; Transposable Element;
 KW   Gypsy-1_XX.
@@ -128,6 +138,10 @@ SQ   Sequence 30 BP; 8 A; 7 C; 8 G; 7 T; 0 other;
         assert_eq!(
             e.keywords,
             "Gypsy; LTR Retrotransposon; Transposable Element; Gypsy-1_XX."
+        );
+        assert_eq!(
+            e.description,
+            "Gypsy-1_XX, an LTR retrotransposon from Testus."
         );
         assert_eq!(e.species.as_deref(), Some("Testus exampli"));
         assert_eq!(e.seq.len(), 30);

@@ -145,6 +145,140 @@ pub fn repbase_label(keywords: &str) -> Option<String> {
     }
 }
 
+/// Lower-case words of a Repbase description or keyword line (hyphens kept,
+/// so `non-LTR` stays one word).
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// Does the text name a transposable element or its proteins?
+fn mentions_te(words: &[String]) -> bool {
+    words.iter().any(|w| {
+        w.contains("transpos")
+            || w.contains("retro")
+            || w.contains("viru")
+            || w.contains("viral")
+            || matches!(
+                w.as_str(),
+                "ltr"
+                    | "line"
+                    | "sine"
+                    | "mite"
+                    | "helitron"
+                    | "element"
+                    | "integrase"
+                    | "transcriptase"
+                    | "gag"
+                    | "polyprotein"
+                    | "non-ltr"
+            )
+    })
+}
+
+/// Why a Repbase entry is left out of the reference database, if it is.
+///
+/// Repbase also holds protein-coding multicopy genes (ribosomal proteins,
+/// histones) and, in older entries, repeats described only by the host
+/// gene or mRNA they were found in (`UBX_DM`: "Drosophila repeat, from
+/// Ultrabithorax locus"; `PEN1`: "pen repeat mRNA"). As references they
+/// make host genes look like repeats. Entries with a usable label are kept,
+/// as are RNA genes and anything whose description names a TE.
+pub fn repbase_exclusion(
+    keywords: &str,
+    description: &str,
+    label: Option<&str>,
+) -> Option<&'static str> {
+    let kw = words(keywords);
+    let de = words(description);
+    let rna = |w: &[String]| {
+        w.iter()
+            .any(|x| x.ends_with("rna") || matches!(x.as_str(), "5s" | "7sl" | "srp" | "ncrna"))
+    };
+    let multicopy = keywords.split(';').any(|f| {
+        f.trim()
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case("Multicopy gene")
+    });
+    if multicopy && !matches!(label, Some("tRNA" | "rRNA" | "snRNA")) && !rna(&kw) && !rna(&de) {
+        return Some("multicopy_gene");
+    }
+    if label.is_some() {
+        return None;
+    }
+    let all = kw.iter().chain(&de).cloned().collect::<Vec<_>>();
+    let host = de.iter().any(|w| {
+        matches!(
+            w.as_str(),
+            "gene"
+                | "genes"
+                | "mrna"
+                | "cdna"
+                | "cds"
+                | "locus"
+                | "allele"
+                | "mutant"
+                | "intron"
+                | "exon"
+                | "promoter"
+                | "utr"
+                | "flanking"
+                | "non-coding"
+        )
+    });
+    (host && !mentions_te(&all)).then_some("host_gene_context")
+}
+
+/// A label from the free text of entries whose keywords [`repbase_label`]
+/// cannot read: the old-style `LTR; retrotransposon; ...` keywords of the
+/// appendix, `Simple repeat.`, RNA genes, and descriptions such as "Drosophila
+/// retrotransposon 412 genome" with `LTR` among the keywords. Ambiguous text
+/// (a bare "retrotransposon") stays unlabelled.
+pub fn repbase_legacy_label(keywords: &str, description: &str) -> Option<String> {
+    let w = words(&format!("{keywords} {description}"));
+    let has = |x: &str| w.iter().any(|y| y == x);
+    let text = w.join(" ");
+    let label = if text.contains("simple repeat") {
+        "Simple_repeat"
+    } else if has("satellite") || has("minisatellite") {
+        "Satellite"
+    } else if has("helitron") {
+        "RC/Helitron"
+    } else if has("sine") {
+        "SINE"
+    } else if has("non-ltr") || has("line") || has("line-1") {
+        "LINE"
+    } else if has("ltr") || text.contains("endogenous retrovirus") {
+        "LTR"
+    } else if has("mite")
+        || has("transposase")
+        || text.contains("dna transposon")
+        || (w.iter().any(|x| x == "transposon" || x == "transposons")
+            && !w.iter().any(|x| x.contains("retro")))
+    {
+        "DNA"
+    } else if has("trna") {
+        "tRNA"
+    } else if ["rrna", "5s", "18s", "28s"].iter().any(|x| has(x)) {
+        "rRNA"
+    } else if w
+        .iter()
+        .any(|x| x == "snrna" || (x.starts_with('u') && x.ends_with("-rna")))
+    {
+        "snRNA"
+    } else if w
+        .iter()
+        .any(|x| x.ends_with("rna") && !matches!(x.as_str(), "mrna" | "cdna"))
+    {
+        "RNA"
+    } else {
+        return None;
+    };
+    Some(label.to_owned())
+}
+
 /// Make a Repbase superfamily name usable inside a RepeatMasker label.
 fn sanitize(name: &str) -> String {
     name.chars()
@@ -194,6 +328,85 @@ mod tests {
         ] {
             assert_eq!(repbase_label(kw).as_deref(), Some(label), "{kw}");
         }
+    }
+
+    #[test]
+    fn legacy_entries_are_labelled_from_their_text() {
+        for (kw, de, label) in [
+            (
+                "LTR; retrotransposon; reverse transcriptase; DM412.",
+                "Drosophila retrotransposon 412 genome.",
+                Some("LTR"),
+            ),
+            ("Simple repeat.", "(CA)n repeat", Some("Simple_repeat")),
+            ("non-LTR retrotransposon; X.", "", Some("LINE")),
+            ("MITE; X.", "", Some("DNA")),
+            ("transposon; TZ86.", "maize transposon Tz86", Some("DNA")),
+            ("retrotransposon; X.", "a retrotransposon", None),
+            ("Repetitive sequence; UBX_DM.", "Drosophila repeat", None),
+            (
+                "Multicopy gene; ncRNA; RNA; RNA-U1_OS.",
+                "U1-RNA gene sequence",
+                Some("snRNA"),
+            ),
+            (
+                "PEN1; Repetitive sequence.",
+                "D.melanogaster pen repeat mRNA.",
+                None,
+            ),
+        ] {
+            assert_eq!(repbase_legacy_label(kw, de).as_deref(), label, "{kw} {de}");
+        }
+    }
+
+    #[test]
+    fn host_genes_are_excluded_but_tes_and_rna_genes_kept() {
+        let ex = |kw, de, label| repbase_exclusion(kw, de, label);
+        assert_eq!(
+            ex(
+                "Repetitive sequence; DMUBX; UBX_DM.",
+                "Drosophila repeat, from Ultrabithorax locus (Ubx) of the Bithorax complex (BX-C).",
+                None
+            ),
+            Some("host_gene_context")
+        );
+        assert_eq!(
+            ex(
+                "PEN1; Repetitive sequence.",
+                "D.melanogaster pen repeat mRNA.",
+                None
+            ),
+            Some("host_gene_context")
+        );
+        assert_eq!(
+            ex(
+                "Multicopy gene; 60S-L21_MM.",
+                "Multiple copied gene: 60S ribosomal protein L21 gene.",
+                None
+            ),
+            Some("multicopy_gene")
+        );
+        assert_eq!(
+            ex(
+                "Multicopy gene; ncRNA; RNA; RNA-U1_OS.",
+                "U1-RNA gene sequence",
+                Some("snRNA")
+            ),
+            None
+        );
+        assert_eq!(ex("tRNA; Multicopy gene;", "", Some("tRNA")), None);
+        assert_eq!(
+            ex(
+                "R1B_DS.",
+                "Dugesiella sp. retrotransposon R1 reverse transcriptase gene, partial cds.",
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            ex("Gypsy; LTR Retrotransposon;", "a gene", Some("LTR/Gypsy")),
+            None
+        );
     }
 
     #[test]
