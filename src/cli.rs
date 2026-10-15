@@ -959,8 +959,21 @@ pub fn run_annotate() -> Result<()> {
                 .help("Further nucleotide library with name#Class/Superfamily headers (a classified rep library, a `rep relatives` file); repeatable")
                 .value_parser(value_parser!(PathBuf)),
         )
+        .arg(
+            Arg::new("proteins")
+                .long("proteins")
+                .help("TE protein library (name#Class/Superfamily) used instead of the database's")
+                .value_parser(value_parser!(PathBuf)),
+        )
         .arg(Arg::new("out").long("out").default_value("rep_annotate").value_parser(value_parser!(PathBuf)))
         .arg(Arg::new("threads").long("threads").default_value("1").value_parser(value_parser!(usize)))
+        .arg(
+            Arg::new("min-protein-bits")
+                .long("min-protein-bits")
+                .default_value("80")
+                .help("Weakest BLASTX hit kept (weaker ones are mostly host genes)")
+                .value_parser(value_parser!(f64)),
+        )
         .arg(Arg::new("hard-mask").long("hard-mask").action(ArgAction::SetTrue).help("Mask with N instead of lower case"))
         .arg(Arg::new("no-proteins").long("no-proteins").action(ArgAction::SetTrue).help("Skip the BLASTX round"))
         .arg(Arg::new("no-novel").long("no-novel").action(ArgAction::SetTrue).help("Skip the search for terminal-repeat pairs"))
@@ -973,12 +986,14 @@ pub fn run_annotate() -> Result<()> {
         m.get_one::<PathBuf>("out").cloned().expect("has a default"),
     );
     c.refdb = m.get_one::<PathBuf>("refdb").cloned();
+    c.protein_library = m.get_one::<PathBuf>("proteins").cloned();
     c.libraries = m
         .get_many::<PathBuf>("library")
         .map(|v| v.cloned().collect())
         .unwrap_or_default();
     c.threads = *m.get_one::<usize>("threads").expect("has a default");
     c.hard_mask = m.get_flag("hard-mask");
+    c.min_protein_bits = *m.get_one::<f64>("min-protein-bits").expect("has a default");
     c.proteins = !m.get_flag("no-proteins");
     c.novel = !m.get_flag("no-novel");
     let s = crate::annotate::run_annotate(&c, &crate::RealCommandRunner)?;

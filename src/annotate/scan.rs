@@ -192,11 +192,13 @@ pub const LTR_PAIR: &str = "candidate_LTR_pair";
 pub const TIR_PAIR: &str = "candidate_TIR_pair";
 
 /// Terminal-repeat pairs among a stretch's self-alignments:
-/// - direct repeats of 100–3,000 bp, at least 80% identical, 1–25 kb apart
-///   with at least 500 bp between them (LTR retrotransposon-like);
-/// - inverted repeats of 20–1,000 bp, at least 80% identical, bounding
-///   80 bp–20 kb with at least 50 bp between them (TIR transposon-like).
+/// - direct repeats of 100–3,000 bp, at least 80% identical, bounding
+///   1.5–25 kb with at least 1 kb between them (LTR retrotransposon-like);
+/// - inverted repeats of 20–300 bp, at least 80% identical, bounding
+///   100 bp–12 kb with at least 50 bp between them (TIR transposon-like).
+///   Longer inverted repeats are mostly inverted duplications.
 ///
+/// [`ends`] then decides which pairs look inserted.
 /// Overlapping candidates keep the longest, most identical pair.
 pub fn terminal_pairs(hits: &[SelfHit]) -> Vec<Candidate> {
     let mut all = Vec::new();
@@ -212,7 +214,7 @@ pub fn terminal_pairs(hits: &[SelfHit]) -> Vec<Candidate> {
             }
             let inner = h.s_start - h.q_end - 1;
             let span = h.s_end - h.q_start + 1;
-            if (100..=3000).contains(&len) && inner >= 500 && (1000..=25_000).contains(&span) {
+            if (100..=3000).contains(&len) && inner >= 1000 && (1500..=25_000).contains(&span) {
                 all.push(Candidate {
                     kind: LTR_PAIR,
                     start: h.q_start - 1,
@@ -228,7 +230,7 @@ pub fn terminal_pairs(hits: &[SelfHit]) -> Vec<Candidate> {
             }
             let inner = h.s_end - h.q_end - 1;
             let span = h.s_start - h.q_start + 1;
-            if (20..=1000).contains(&len) && inner >= 50 && (80..=20_000).contains(&span) {
+            if (20..=300).contains(&len) && inner >= 50 && (100..=12_000).contains(&span) {
                 all.push(Candidate {
                     kind: TIR_PAIR,
                     start: h.q_start - 1,
@@ -252,6 +254,79 @@ pub fn terminal_pairs(hits: &[SelfHit]) -> Vec<Candidate> {
     }
     kept.sort_by_key(|c| c.start);
     kept
+}
+
+/// Element ends supported by a target-site duplication.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ends {
+    pub start: usize,
+    pub end: usize,
+    pub tsd: usize,
+    /// TG...CA termini (LTR elements).
+    pub tg_ca: bool,
+}
+
+/// Refine a candidate's ends to an insertion signature, or reject it.
+/// Alignment ends are often a few bases short, so ends may move by up to
+/// `slack` bases; the longest TSD wins, then the smallest shift.
+/// - LTR pairs need a 4–6 bp TSD within 3 bp of the ends; TG...CA termini
+///   are reported.
+/// - TIR pairs need a TSD of at least 5 bp within 2 bp of the ends (hAT,
+///   Mutator, P), or exactly at the ends a TA (Tc1/mariner) or TTAA
+///   (piggyBac). Shorter TSDs at shifted ends match by chance too often.
+pub fn ends(seq: &[u8], kind: &str, start: usize, end: usize) -> Option<Ends> {
+    let (slack, min, max) = if kind == LTR_PAIR {
+        (3, 4, 6)
+    } else {
+        (2, 5, 10)
+    };
+    let mut best: Option<(Ends, usize)> = None;
+    for ds in -(slack as i64)..=slack as i64 {
+        for de in -(slack as i64)..=slack as i64 {
+            let (Some(s), Some(e)) = (
+                start.checked_add_signed(ds as isize),
+                end.checked_add_signed(de as isize),
+            ) else {
+                continue;
+            };
+            if e > seq.len() || s + 2 >= e {
+                continue;
+            }
+            let Some(k) = tsd(seq, s, e, min, max) else {
+                continue;
+            };
+            let shift = ds.unsigned_abs() as usize + de.unsigned_abs() as usize;
+            if best
+                .as_ref()
+                .is_none_or(|(b, bs)| k > b.tsd || (k == b.tsd && shift < *bs))
+            {
+                let tg_ca = seq[s..].starts_with(b"TG") && seq[..e].ends_with(b"CA");
+                best = Some((
+                    Ends {
+                        start: s,
+                        end: e,
+                        tsd: k,
+                        tg_ca,
+                    },
+                    shift,
+                ));
+            }
+        }
+    }
+    if best.is_none() && kind == TIR_PAIR {
+        // short TSDs of known families, at the aligned ends only
+        for (k, motif) in [(4, &b"TTAA"[..]), (2, &b"TA"[..])] {
+            if tsd(seq, start, end, k, k) == Some(k) && &seq[end..end + k] == motif {
+                return Some(Ends {
+                    start,
+                    end,
+                    tsd: k,
+                    tg_ca: false,
+                });
+            }
+        }
+    }
+    best.map(|(b, _)| b)
 }
 
 /// Length of the longest target-site duplication (`min..=max` bp) flanking
@@ -365,6 +440,37 @@ mod tests {
                 },
             ]
         );
+        let ltr = |tsd: &[u8], shift: usize| {
+            let mut s = random(200, 21);
+            s.extend(tsd);
+            s.extend(b"TG");
+            s.extend(random(2000, 22));
+            s.extend(b"CA");
+            s.extend(tsd);
+            s.extend(random(200, 23));
+            // reported ends `shift` bases inside the element
+            ends(&s, LTR_PAIR, 205 + shift, 2209 - shift)
+        };
+        assert_eq!(
+            ltr(b"ACGTA", 2),
+            Some(Ends {
+                start: 205,
+                end: 2209,
+                tsd: 5,
+                tg_ca: true
+            })
+        );
+        assert_eq!(ltr(b"ACGTA", 5), None, "beyond the slack");
+        let tir = |tsd: &[u8]| {
+            let mut s = random(100, 31);
+            s.extend(tsd);
+            s.extend(random(500, 32));
+            s.extend(tsd);
+            s.extend(random(100, 33));
+            ends(&s, TIR_PAIR, 100 + tsd.len(), 600 + tsd.len())
+        };
+        assert_eq!(tir(b"TA").map(|e| e.tsd), Some(2));
+        assert_eq!(tir(b"GACCTAGG").map(|e| e.tsd), Some(8));
         let s = b"GGGGCATGAAAAAAAAAACATGTTTT";
         assert_eq!(tsd(s, 8, 18, 2, 10), Some(4));
         assert_eq!(tsd(s, 9, 18, 2, 10), None);

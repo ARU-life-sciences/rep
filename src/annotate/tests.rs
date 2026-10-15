@@ -156,3 +156,27 @@ fn windows_overlap_and_cover_the_stretch() {
     assert_eq!(window_of("q3_1800").unwrap(), (3, 1800));
     assert!(window_of("x").is_err());
 }
+
+#[test]
+fn classified_references_claim_bases_before_unknown_ones() {
+    let hit = |reference: &str, class: &str, bitscore: f64| Fragment {
+        start: 0,
+        end: 1000,
+        reference: reference.into(),
+        class: class.into(),
+        bitscore,
+        ..Default::default()
+    };
+    let order = by_score(vec![
+        hit("DM412#Unknown", "Unknown", 2000.0),
+        hit("DM412_I#LTR/Gypsy", "LTR/Gypsy", 1500.0),
+        hit("DM412_LTR#LTR/Gypsy", "LTR/Gypsy", 1600.0),
+    ]);
+    assert_eq!(
+        order
+            .iter()
+            .map(|f| f.reference.as_str())
+            .collect::<Vec<_>>(),
+        vec!["DM412_LTR#LTR/Gypsy", "DM412_I#LTR/Gypsy", "DM412#Unknown"]
+    );
+}

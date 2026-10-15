@@ -48,7 +48,7 @@ use crate::{
     CommandRunner, Error, ErrorKind, Result,
 };
 use resolve::{chain, claim, Occupancy};
-use scan::{low_complexity_runs, tandem_runs, terminal_pairs, tsd, SelfHit};
+use scan::{low_complexity_runs, tandem_runs, terminal_pairs, SelfHit};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AnnotateConfig {
@@ -58,10 +58,19 @@ pub struct AnnotateConfig {
     /// Further nucleotide libraries with `name#Class/Superfamily` headers,
     /// e.g. a classified `rep` library or a `rep relatives` file.
     pub libraries: Vec<PathBuf>,
+    /// TE protein library used instead of the database's.
+    pub protein_library: Option<PathBuf>,
     pub output_dir: PathBuf,
     pub threads: usize,
     pub nucl_evalue: f64,
     pub prot_evalue: f64,
+    /// Weaker protein hits are mostly host genes with transposase-like
+    /// domains. On D. melanogaster (dm6, 2026-10-15, Drosophila references
+    /// held out) 80 bits kept 87% of the protein-found bases in the
+    /// RepeatMasker track of a pericentric region and cut those outside it
+    /// in a euchromatic region from 7.8 to 4.6 kb; 100 bits cut that to
+    /// 2.5 kb but lost 7 points of sensitivity in the pericentric region.
+    pub min_protein_bits: f64,
     /// Search window and overlap for long sequences.
     pub window: u64,
     pub window_overlap: u64,
@@ -84,10 +93,12 @@ impl AnnotateConfig {
             input,
             refdb: None,
             libraries: Vec::new(),
+            protein_library: None,
             output_dir,
             threads: 1,
             nucl_evalue: 1e-5,
             prot_evalue: 1e-5,
+            min_protein_bits: 80.0,
             window: 20_000,
             window_overlap: 2_000,
             min_fragment: 30,
@@ -272,16 +283,28 @@ pub fn run_annotate(c: &AnnotateConfig, runner: &dyn CommandRunner) -> Result<An
     let mut fragments = claim(by_score(nucl), &mut occupied, c.min_fragment);
 
     // 2. protein hits on what nucleotide hits left
-    if let (true, Some(db)) = (c.proteins, &db) {
+    let protein_library = match (&c.protein_library, &db) {
+        (Some(p), _) => Some((
+            p.clone(),
+            c.output_dir.join("index"),
+            "library_proteins.blastx",
+        )),
+        (None, Some(db)) => Some((
+            db.protein_library(),
+            db.build_dir().join("index"),
+            "proteins.blastx",
+        )),
+        (None, None) => None,
+    };
+    if let (true, Some((library, index_dir, index_name))) = (c.proteins, protein_library) {
         let gaps = gaps_of(&input, &occupied, c.protein_min_gap);
         if !gaps.is_empty() {
             let queries = c.output_dir.join("protein_queries.fa");
             write_windows(&queries, &input, &gaps, c.window, c.window_overlap)?;
-            let index_dir = db.build_dir().join("index");
-            let library = db.protein_library();
+            fs::create_dir_all(&index_dir)?;
             let index = ensure_index(
                 &index_dir,
-                "proteins.blastx",
+                index_name,
                 "db",
                 &library_stamp(&library)?,
                 |out| {
@@ -297,6 +320,7 @@ pub fn run_annotate(c: &AnnotateConfig, runner: &dyn CommandRunner) -> Result<An
             run_checked(runner, &mut cmd, "blastx")?;
             let prot = read_hits(&out)?
                 .iter()
+                .filter(|h| h.bitscore >= c.min_protein_bits)
                 .map(|h| fragment(h, "refdb", Evidence::Protein))
                 .collect::<Result<Vec<_>>>()?;
             fragments.extend(claim(by_score(prot), &mut occupied, c.min_fragment));
@@ -336,7 +360,7 @@ pub fn run_annotate(c: &AnnotateConfig, runner: &dyn CommandRunner) -> Result<An
                 });
             }
         }
-        fragments.extend(claim(runs, &mut occupied, c.min_fragment));
+        fragments.extend(claim(runs, &mut occupied, c.min_fragment.min(20)));
     }
     fragments.sort_by(|a, b| a.seq.cmp(&b.seq).then(a.start.cmp(&b.start)));
     summary.elements = chain(&mut fragments, c.chain_gap);
@@ -495,11 +519,16 @@ fn fragment(hit: &ProteinHit, source: &str, evidence: Evidence) -> Result<Fragme
     })
 }
 
-/// Best bit score first; ties in a fixed order so that runs are reproducible.
+/// Hits to classified references first, then best bit score; ties in a
+/// fixed order so that runs are reproducible. Unknown references include
+/// whole-element entries (Repbase's DM412 is the 412 element, LTRs and all)
+/// that would otherwise outscore the classified parts of the same element.
 fn by_score(mut hits: Vec<Fragment>) -> Vec<Fragment> {
+    let unknown = |f: &Fragment| f.class == "Unknown";
     hits.sort_by(|a, b| {
-        b.bitscore
-            .total_cmp(&a.bitscore)
+        unknown(a)
+            .cmp(&unknown(b))
+            .then(b.bitscore.total_cmp(&a.bitscore))
             .then(a.seq.cmp(&b.seq))
             .then(a.start.cmp(&b.start))
             .then(a.end.cmp(&b.end))
@@ -578,18 +607,16 @@ fn find_candidates(
     for ((seq, offset), hits) in by_window {
         for cand in terminal_pairs(&hits) {
             let (start, end) = (offset + cand.start, offset + cand.end);
+            let s = &input.seqs[seq];
+            let Some(e) = scan::ends(s, cand.kind, start as usize, end as usize) else {
+                continue; // no insertion signature
+            };
+            let (start, end) = (e.start as u64, e.end as u64);
             let occ = taken.entry(seq).or_default();
             if occ.free(start, end) != vec![(start, end)] {
                 continue; // found again in an overlapping window
             }
             occ.insert(start, end);
-            let s = &input.seqs[seq];
-            let (min_tsd, max_tsd) = if cand.kind == scan::LTR_PAIR {
-                (4, 6)
-            } else {
-                (2, 10)
-            };
-            let tsd = tsd(s, start as usize, end as usize, min_tsd, max_tsd);
             found.push(Fragment {
                 seq,
                 start,
@@ -601,9 +628,10 @@ fn find_candidates(
                 identity: cand.identity,
                 evidence: Evidence::Structure,
                 note: format!(
-                    "terminal_repeat={}bp;tsd={}",
+                    "terminal_repeat={}bp;tsd={}bp{}",
                     cand.repeat_length,
-                    tsd.map_or("none".into(), |k| format!("{k}bp"))
+                    e.tsd,
+                    if e.tg_ca { ";TG..CA" } else { "" }
                 ),
                 ..Default::default()
             });
