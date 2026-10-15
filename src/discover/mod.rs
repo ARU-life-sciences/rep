@@ -10,8 +10,13 @@
 //!
 //! Labelled members (RepeatClassifier labels, or our own confident calls)
 //! are used to propagate a class to Unknown members, with accuracy measured
-//! by leave-one-out on the labelled members themselves. Groups with no
-//! labelled member are ranked as candidate novel TE classes.
+//! by leave-one-out on the labelled members themselves: first from the
+//! member's family cluster, else from its direct protein neighbours (members
+//! sharing a protein cluster with its family cluster). Groups are not used
+//! for labels: a chain of unlabelled families joins whichever labelled
+//! component it reaches first, and the cannot-link rule makes every group
+//! one class by construction, so their purity measures nothing. Groups with
+//! no labelled member are ranked as candidate novel TE classes.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -98,13 +103,13 @@ pub struct DiscoverSummary {
     pub groups: usize,
     pub unlabelled_members: usize,
     pub propagated_from_family_cluster: usize,
-    pub propagated_from_group: usize,
+    pub propagated_from_proteins: usize,
     /// Members whose propagated label differs in class from their own
     /// (`relabels.tsv`, for `rep relabel --overrides`).
     pub relabels: usize,
     /// Leave-one-out accuracy of propagation on labelled members, by level.
     pub loo_family_cluster: Accuracy,
-    pub loo_group: Accuracy,
+    pub loo_proteins: Accuracy,
     pub novel_groups: usize,
     /// Novel groups with members from at least two species.
     pub novel_groups_multi_species: usize,
@@ -230,15 +235,16 @@ pub fn run_discover(c: &DiscoverConfig, runner: &dyn CommandRunner) -> Result<Di
     // label propagation with leave-one-out accuracy
     let by_family = invert(&family_of);
     let by_group = invert(&group_of);
+    let neighbours = ProteinNeighbours::new(&members, &by_family, &protein_members);
     let mut propagated: Vec<Option<(String, &'static str, f64, usize)>> = vec![None; members.len()];
     for (m, member) in members.iter().enumerate() {
         let family = predict(&members, &by_family[&family_of[m]], m, c.min_purity);
-        let group = predict(&members, &by_group[&group_of[m]], m, c.min_purity);
+        let proteins = decide(neighbours.counts(&members, m, family_of[m]), c.min_purity);
         match &member.reference {
             Some(truth) => {
                 for (prediction, acc) in [
                     (&family, &mut summary.loo_family_cluster),
-                    (&group, &mut summary.loo_group),
+                    (&proteins, &mut summary.loo_proteins),
                 ] {
                     if let Some((label, _, _)) = prediction {
                         acc.predicted += 1;
@@ -250,14 +256,14 @@ pub fn run_discover(c: &DiscoverConfig, runner: &dyn CommandRunner) -> Result<Di
                 if let Some((label, purity, n)) = family {
                     propagated[m] = Some((label, "family_cluster", purity, n));
                     summary.propagated_from_family_cluster += 1;
-                } else if let Some((label, purity, n)) = group {
-                    propagated[m] = Some((label, "group", purity, n));
-                    summary.propagated_from_group += 1;
+                } else if let Some((label, purity, n)) = proteins {
+                    propagated[m] = Some((label, "proteins", purity, n));
+                    summary.propagated_from_proteins += 1;
                 }
             }
         }
     }
-    for acc in [&mut summary.loo_family_cluster, &mut summary.loo_group] {
+    for acc in [&mut summary.loo_family_cluster, &mut summary.loo_proteins] {
         acc.accuracy = acc.correct as f64 / acc.predicted.max(1) as f64;
     }
     summary.unlabelled_members = members.iter().filter(|m| m.reference.is_none()).count();
@@ -281,18 +287,28 @@ fn predict(
     min_purity: f64,
 ) -> Option<(String, f64, usize)> {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut full: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
-    let mut n = 0;
     for &i in cluster.iter().filter(|&&i| i != exclude) {
         if let Some(label) = &members[i].reference {
-            *counts.entry(top_level(label)).or_default() += 1;
-            *full
-                .entry(top_level(label))
-                .or_default()
-                .entry(label)
-                .or_default() += 1;
-            n += 1;
+            *counts.entry(label).or_default() += 1;
         }
+    }
+    decide(counts, min_purity)
+}
+
+/// Majority top-level class among labelled neighbours (full label -> count),
+/// with its most common full label, if pure enough.
+fn decide(labels: BTreeMap<&str, usize>, min_purity: f64) -> Option<(String, f64, usize)> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut full: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
+    let mut n = 0;
+    for (label, k) in labels.into_iter().filter(|(_, k)| *k > 0) {
+        *counts.entry(top_level(label)).or_default() += k;
+        *full
+            .entry(top_level(label))
+            .or_default()
+            .entry(label)
+            .or_default() += k;
+        n += k;
     }
     let (best, count) = counts
         .into_iter()
@@ -307,6 +323,73 @@ fn predict(
         .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
         .map(|(l, _)| (*l).to_owned())?;
     Some((label, purity, n))
+}
+
+/// Labelled members one protein link away from each family cluster.
+///
+/// A neighbour is a labelled member with an ORF in a protein cluster that
+/// also holds an ORF of the family cluster. Neighbours are counted once per
+/// shared protein cluster, so a neighbour sharing two proteins counts twice;
+/// purity is a ratio, so this weights rather than biases it.
+struct ProteinNeighbours<'a> {
+    /// Protein clusters (indices) of each member, without repeats.
+    member_proteins: Vec<Vec<usize>>,
+    /// Label counts per family cluster representative, over its protein clusters.
+    family_counts: HashMap<usize, BTreeMap<&'a str, usize>>,
+}
+
+impl<'a> ProteinNeighbours<'a> {
+    fn new(
+        members: &'a [Member],
+        by_family: &HashMap<usize, Vec<usize>>,
+        protein_members: &BTreeMap<&str, Vec<usize>>,
+    ) -> Self {
+        let mut member_proteins = vec![Vec::new(); members.len()];
+        let mut protein_counts = Vec::with_capacity(protein_members.len());
+        for (p, ids) in protein_members.values().enumerate() {
+            let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+            for &m in ids.iter().collect::<BTreeSet<_>>() {
+                member_proteins[m].push(p);
+                if let Some(label) = &members[m].reference {
+                    *counts.entry(label.as_str()).or_default() += 1;
+                }
+            }
+            protein_counts.push(counts);
+        }
+        let mut family_counts = HashMap::new();
+        for (&f, ids) in by_family {
+            let proteins = ids
+                .iter()
+                .flat_map(|&m| member_proteins[m].iter().copied())
+                .collect::<BTreeSet<_>>();
+            if proteins.is_empty() {
+                continue;
+            }
+            let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+            for p in proteins {
+                for (label, k) in &protein_counts[p] {
+                    *counts.entry(label).or_default() += k;
+                }
+            }
+            family_counts.insert(f, counts);
+        }
+        Self {
+            member_proteins,
+            family_counts,
+        }
+    }
+
+    /// Neighbour label counts for member `m` of family cluster `f`, leaving
+    /// out `m` itself.
+    fn counts(&self, members: &[Member], m: usize, f: usize) -> BTreeMap<&'a str, usize> {
+        let mut counts = self.family_counts.get(&f).cloned().unwrap_or_default();
+        if let Some(label) = &members[m].reference {
+            if let Some(k) = counts.get_mut(label.as_str()) {
+                *k -= self.member_proteins[m].len();
+            }
+        }
+        counts
+    }
 }
 
 fn invert(assignment: &[usize]) -> HashMap<usize, Vec<usize>> {
@@ -1005,7 +1088,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!((s.groups, s.mixed_protein_clusters), (3, 1));
-        assert_eq!(s.propagated_from_group, 0);
+        assert_eq!(s.propagated_from_proteins, 0);
+    }
+
+    #[test]
+    fn labels_reach_direct_protein_neighbours_but_not_along_chains() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = dir.path().join("results");
+        sample(
+            &results,
+            "sp_a/GCA_1",
+            &[
+                ("f1#LINE/CR1", "LINE/CR1", "known_te", "LINE/CR1", "high"),
+                ("f2#LINE/CR1", "LINE/CR1", "known_te", "LINE/CR1", "high"),
+                ("f3#Unknown", "Unknown", "unresolved", "Unknown", "low"),
+                ("f4#Unknown", "Unknown", "unresolved", "Unknown", "low"),
+            ],
+        );
+        // f1, f2 and f3 share one protein; f3 and f4 share another, so the
+        // group joins all four but f4 has no labelled neighbour of its own
+        let runner = FakeMmseqs {
+            nucl: vec![(0, 0), (1, 1), (2, 2), (3, 3)],
+            prot: vec![
+                ("m0_o0".into(), "m0_o0".into()),
+                ("m0_o0".into(), "m1_o0".into()),
+                ("m0_o0".into(), "m2_o0".into()),
+                ("m2_o1".into(), "m2_o1".into()),
+                ("m2_o1".into(), "m3_o0".into()),
+            ],
+        };
+        let s = run_discover(
+            &DiscoverConfig::new(results, dir.path().join("out")),
+            &runner,
+        )
+        .unwrap();
+        assert_eq!(s.groups, 1);
+        assert_eq!(s.propagated_from_proteins, 1, "f3 only");
+        // each LINE is predicted from the other, not from itself
+        assert_eq!((s.loo_proteins.predicted, s.loo_proteins.correct), (2, 2));
+        let relabels = fs::read_to_string(dir.path().join("out").join(RELABELS)).unwrap();
+        assert!(relabels.contains("f3#Unknown\tUnknown\tLINE/CR1\tproteins\t1.00\t2"));
+        assert!(!relabels.contains("f4#Unknown"));
     }
 
     #[test]

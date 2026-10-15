@@ -923,18 +923,18 @@ pub fn run_discover() -> Result<()> {
     c.min_purity = num("min-purity");
     let s = crate::discover::run_discover(&c, &crate::RealCommandRunner)?;
     eprintln!(
-        "{} families from {} samples: {} family clusters, {} groups; propagated {} (family) + {} (group); \
-         leave-one-out accuracy {:.3} (family, n={}) / {:.3} (group, n={}); {} novel groups",
+        "{} families from {} samples: {} family clusters, {} groups; propagated {} (family) + {} (proteins); \
+         leave-one-out accuracy {:.3} (family, n={}) / {:.3} (proteins, n={}); {} novel groups",
         s.members,
         s.samples,
         s.family_clusters,
         s.groups,
         s.propagated_from_family_cluster,
-        s.propagated_from_group,
+        s.propagated_from_proteins,
         s.loo_family_cluster.accuracy,
         s.loo_family_cluster.predicted,
-        s.loo_group.accuracy,
-        s.loo_group.predicted,
+        s.loo_proteins.accuracy,
+        s.loo_proteins.predicted,
         s.novel_groups
     );
     Ok(())
