@@ -241,3 +241,35 @@ fn extended_ends_snap_to_the_elements_own_inverted_repeats() {
     assert_eq!(r.seq, element);
     assert_eq!((r.added_5, r.added_3), (100, 100));
 }
+
+#[test]
+fn a_conserved_tsd_taken_into_the_extension_is_trimmed_off() {
+    // a Tc1-like element: every copy sits in TA..TA, so the extension takes
+    // the TSD (and the copies' agreement on it) into the consensus
+    let element = [b"CAGT".to_vec(), random(600, 9), b"ACTG".to_vec()].concat();
+    let copies = (0..12)
+        .map(|i| {
+            [
+                random(300, 100 + i as u64),
+                b"TA".to_vec(),
+                mutate(&element, 23, i),
+                b"TA".to_vec(),
+                random(300, 200 + i as u64),
+            ]
+            .concat()
+        })
+        .collect::<Vec<_>>();
+    let rows = copies
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Row {
+            locus_id: i.to_string(),
+            seq: s.clone(),
+            first: 0,
+            last: s.len() - 1,
+            core: (402, 701),
+        })
+        .collect::<Vec<_>>();
+    let r = refine(&rows, 300, &CurateParams::default()).unwrap();
+    assert_eq!(r.seq, element);
+}

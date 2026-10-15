@@ -1,14 +1,14 @@
 //! Evidence from recovered genomic copies (`rep recover-copies` output).
 //!
 //! For each family: copy number and completeness from `loci.tsv`, divergence
-//! from the consensus, target-site duplications (TSDs) at the boundaries of
-//! full-length copies, and whether the flanks of different copies resemble
+//! from the consensus, target-site duplications (TSDs) at the ends of
+//! full-length copies (pinned by aligning the consensus termini), and whether the flanks of different copies resemble
 //! each other (expected for segmental duplications or truncated consensi, not
 //! for transposable elements).
 
 use std::{collections::HashMap, path::Path};
 
-use bio::io::fasta;
+use bio::{alignment::pairwise::Aligner, io::fasta};
 use serde::Serialize;
 
 use crate::Result;
@@ -17,8 +17,6 @@ use crate::Result;
 pub struct CopyParams {
     /// Combined consensus coverage for a copy to count as full-length.
     pub full_length_coverage: f64,
-    /// Bases of boundary uncertainty searched on each side for a TSD.
-    pub tsd_slack: usize,
     pub tsd_min: usize,
     pub tsd_max: usize,
     /// Shift (bp) into the flank used for the null TSD expectation.
@@ -33,7 +31,6 @@ impl Default for CopyParams {
     fn default() -> Self {
         Self {
             full_length_coverage: 0.8,
-            tsd_slack: 3,
             tsd_min: 2,
             tsd_max: 15,
             tsd_null_shift: 40,
@@ -73,7 +70,11 @@ pub struct CopyEvidence {
 
 /// Read copy evidence for one family from its copy-recovery directory.
 /// Returns `None` when the directory does not exist.
-pub fn read_copy_evidence(dir: &Path, params: &CopyParams) -> Result<Option<CopyEvidence>> {
+pub fn read_copy_evidence(
+    dir: &Path,
+    consensus: &[u8],
+    params: &CopyParams,
+) -> Result<Option<CopyEvidence>> {
     if !dir.join("loci.tsv").is_file() {
         return Ok(None);
     }
@@ -94,7 +95,10 @@ pub fn read_copy_evidence(dir: &Path, params: &CopyParams) -> Result<Option<Copy
     for row in reader.records() {
         let row = row?;
         let reason = row.get(excl_col).unwrap_or("");
-        if reason.starts_with("duplicate_of") || reason == "ambiguous_strand" {
+        if reason.starts_with("duplicate_of")
+            || reason.starts_with("opposite_strand_shadow")
+            || reason == "ambiguous_strand"
+        {
             continue;
         }
         evidence.loci += 1;
@@ -113,7 +117,7 @@ pub fn read_copy_evidence(dir: &Path, params: &CopyParams) -> Result<Option<Copy
         .iter()
         .filter(|c| full.contains_key(&c.locus_id))
         .collect::<Vec<_>>();
-    evidence.tsd = call_tsd(&complete, params);
+    evidence.tsd = call_tsd(&complete, consensus, params);
     evidence.helitron_ends = helitron_ends(&complete);
     evidence.flank_similarity = flank_similarity(&copies, params.flank_window);
     Ok(Some(evidence))
@@ -201,53 +205,88 @@ fn full_length_loci(dir: &Path, params: &CopyParams) -> Result<HashMap<String, f
     Ok(full)
 }
 
-/// Longest exact duplication flanking the boundaries `start` and `end`,
-/// allowing each boundary to move by up to `slack` bases.
-fn best_tsd(seq: &[u8], start: usize, end: usize, p: &CopyParams) -> Option<(usize, Vec<u8>)> {
-    for k in (p.tsd_min..=p.tsd_max).rev() {
-        for dl in -(p.tsd_slack as isize)..=p.tsd_slack as isize {
-            for dr in -(p.tsd_slack as isize)..=p.tsd_slack as isize {
-                let s = start as isize + dl;
-                let e = end as isize + dr;
-                if s < k as isize || e < 0 || e as usize + k > seq.len() || e <= s {
-                    continue;
-                }
-                let (s, e) = (s as usize, e as usize);
-                let left = &seq[s - k..s];
-                if left == &seq[e..e + k] && !left.contains(&b'N') {
-                    return Some((k, left.to_vec()));
-                }
-            }
-        }
+/// Consensus bases aligned at each end of a copy to pin it.
+const PIN_END: usize = 40;
+/// Bases searched on either side of a reported copy boundary.
+const PIN_WINDOW: usize = 60;
+/// Consensus bases a pinning alignment may leave unaligned at the outer end.
+const PIN_SLACK: usize = 5;
+
+/// Element start and end in `c.seq`, from local alignments of the consensus
+/// termini near the reported boundaries. Those come from BLAST or RepeatMasker
+/// hits, which often stop a few bases inside divergent ends; a TSD has to be
+/// sought exactly outside the element, where a few bases of slack would let
+/// chance short matches in.
+pub fn pin_ends(c: &OrientedCopy, consensus: &[u8]) -> Option<(usize, usize)> {
+    let core = c.core_end().checked_sub(c.left)?;
+    let k = PIN_END.min(consensus.len() / 2).min(core / 2);
+    if k < 20 {
+        return None;
     }
-    None
+    let score = |a: u8, b: u8| {
+        if a.eq_ignore_ascii_case(&b) {
+            2i32
+        } else {
+            -3i32
+        }
+    };
+    let mut aligner = Aligner::new(-5, -2, score);
+    let window = |at: usize| {
+        (
+            at.saturating_sub(PIN_WINDOW),
+            (at + PIN_WINDOW).min(c.seq.len()),
+        )
+    };
+    // half the score of a perfect match
+    let min_score = k as i32;
+    let (a, b) = window(c.left);
+    let five = aligner.local(&consensus[..k], &c.seq[a..b]);
+    if five.score < min_score || five.xstart > PIN_SLACK {
+        return None;
+    }
+    let start = (a + five.ystart).checked_sub(five.xstart)?;
+    let (a, b) = window(c.core_end());
+    let three = aligner.local(&consensus[consensus.len() - k..], &c.seq[a..b]);
+    if three.score < min_score || k - three.xend > PIN_SLACK {
+        return None;
+    }
+    let end = a + three.yend + (k - three.xend);
+    (start < end && end <= c.seq.len()).then_some((start, end))
 }
 
-/// Modal TSD length across copies, compared with the same search at
-/// boundaries shifted into the flanks.
-pub fn call_tsd(copies: &[&OrientedCopy], p: &CopyParams) -> Option<Tsd> {
-    let usable = copies
+/// Longest duplication of the bases just before `start` just after `end`
+/// (one mismatch allowed from 6 bp, as old TSDs have point mutations).
+fn tsd_at(seq: &[u8], start: usize, end: usize, p: &CopyParams) -> Option<(usize, Vec<u8>)> {
+    (p.tsd_min..=p.tsd_max).rev().find_map(|k| {
+        if start < k || end + k > seq.len() {
+            return None;
+        }
+        let left = &seq[start - k..start];
+        let right = &seq[end..end + k];
+        let mismatches = left.iter().zip(right).filter(|(a, b)| a != b).count();
+        (mismatches <= usize::from(k >= 6) && !left.contains(&b'N') && !right.contains(&b'N'))
+            .then(|| (k, left.to_vec()))
+    })
+}
+
+/// Modal TSD length across copies with pinned ends, compared with the same
+/// test at ends shifted into the flanks.
+pub fn call_tsd(copies: &[&OrientedCopy], consensus: &[u8], p: &CopyParams) -> Option<Tsd> {
+    let reach = p.tsd_max + p.tsd_null_shift;
+    let ends = copies
         .iter()
-        .filter(|c| {
-            c.left >= p.tsd_max + p.tsd_slack + p.tsd_null_shift
-                && c.right >= p.tsd_max + p.tsd_slack + p.tsd_null_shift
-        })
+        .filter_map(|c| pin_ends(c, consensus).map(|e| (c, e)))
+        .filter(|(c, (s, e))| *s >= reach && e + reach <= c.seq.len())
         .collect::<Vec<_>>();
-    if usable.len() < p.tsd_min_copies {
+    if ends.len() < p.tsd_min_copies {
         return None;
     }
     let mut observed: Vec<Option<(usize, Vec<u8>)>> = Vec::new();
     let mut null: Vec<Option<usize>> = Vec::new();
-    for c in &usable {
-        observed.push(best_tsd(&c.seq, c.left, c.core_end(), p));
+    for (c, (s, e)) in &ends {
+        observed.push(tsd_at(&c.seq, *s, *e, p));
         null.push(
-            best_tsd(
-                &c.seq,
-                c.left - p.tsd_null_shift,
-                c.core_end() + p.tsd_null_shift,
-                p,
-            )
-            .map(|(k, _)| k),
+            tsd_at(&c.seq, s - p.tsd_null_shift, e + p.tsd_null_shift, p).map(|(k, _)| k),
         );
     }
     let mut counts: HashMap<usize, usize> = HashMap::new();
@@ -265,7 +304,7 @@ pub fn call_tsd(copies: &[&OrientedCopy], p: &CopyParams) -> Option<Tsd> {
         .keys()
         .copied()
         .max_by_key(|&k| (counts[&k], std::cmp::Reverse(k)))?;
-    let n = usable.len() as f64;
+    let n = ends.len() as f64;
     let support = score(mode) as f64 / n;
     let null_support = null
         .iter()
@@ -289,7 +328,7 @@ pub fn call_tsd(copies: &[&OrientedCopy], p: &CopyParams) -> Option<Tsd> {
         support,
         null_support,
         motif,
-        copies_evaluated: usable.len(),
+        copies_evaluated: ends.len(),
     })
 }
 
@@ -485,7 +524,7 @@ mod tests {
             .map(|i| copy(i * 7 + 1, 8, (i % 3) as usize))
             .collect::<Vec<_>>();
         let refs = copies.iter().collect::<Vec<_>>();
-        let tsd = call_tsd(&refs, &CopyParams::default()).unwrap();
+        let tsd = call_tsd(&refs, &random(500, 42), &CopyParams::default()).unwrap();
         assert_eq!(tsd.length, 8);
         assert!(tsd.support >= 0.75, "{tsd:?}");
         assert!(tsd.null_support < 0.3);
@@ -493,17 +532,48 @@ mod tests {
     }
 
     #[test]
+    fn pinned_ends_find_tsds_beyond_hits_that_stop_inside_the_element() {
+        // BLAST hits stopping 9 bp inside each end, and a TSD with a point mutation
+        let element = random(500, 42);
+        let copies = (0..6u64)
+            .map(|i| {
+                let tsd = random(8, i + 1000);
+                let mut right_tsd = tsd.clone();
+                right_tsd[3] = if right_tsd[3] == b'A' { b'C' } else { b'A' };
+                let seq = [
+                    random(200, i + 1),
+                    tsd,
+                    element.clone(),
+                    right_tsd,
+                    random(200, i + 2000),
+                ]
+                .concat();
+                OrientedCopy {
+                    locus_id: i.to_string(),
+                    left: 208 + 9,
+                    right: 208 + 9,
+                    seq,
+                }
+            })
+            .collect::<Vec<_>>();
+        let refs = copies.iter().collect::<Vec<_>>();
+        assert_eq!(pin_ends(refs[0], &element), Some((208, 708)));
+        let tsd = call_tsd(&refs, &element, &CopyParams::default()).unwrap();
+        assert_eq!((tsd.length, tsd.copies_evaluated), (8, 6));
+    }
+
+    #[test]
     fn no_tsd_without_duplications() {
         let copies = (0..8).map(|i| copy(i * 7 + 1, 0, 0)).collect::<Vec<_>>();
         let refs = copies.iter().collect::<Vec<_>>();
-        assert_eq!(call_tsd(&refs, &CopyParams::default()), None);
+        assert_eq!(call_tsd(&refs, &random(500, 42), &CopyParams::default()), None);
     }
 
     #[test]
     fn too_few_copies_give_no_call() {
         let copies = (0..2).map(|i| copy(i + 1, 8, 0)).collect::<Vec<_>>();
         assert_eq!(
-            call_tsd(&copies.iter().collect::<Vec<_>>(), &CopyParams::default()),
+            call_tsd(&copies.iter().collect::<Vec<_>>(), &random(500, 42), &CopyParams::default()),
             None
         );
     }
@@ -563,7 +633,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let e = read_copy_evidence(d, &CopyParams::default())
+        let e = read_copy_evidence(d, b"ACGT", &CopyParams::default())
             .unwrap()
             .unwrap();
         assert_eq!((e.loci, e.full_length), (2, 1));
@@ -571,7 +641,7 @@ mod tests {
         let copies = oriented_copies(d).unwrap();
         assert_eq!((copies[1].left, copies[1].right), (20, 10));
         assert!(
-            read_copy_evidence(&d.join("missing"), &CopyParams::default())
+            read_copy_evidence(&d.join("missing"), b"ACGT", &CopyParams::default())
                 .unwrap()
                 .is_none()
         );

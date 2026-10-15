@@ -129,11 +129,11 @@ const MAX_COPIES: usize = 100;
 /// Copy evidence for one family from its RepeatMasker hits.
 pub fn copy_evidence_from_rm(
     hits: &[RmHit],
-    consensus_length: usize,
+    consensus: &[u8],
     genome: Option<&HashMap<String, Vec<u8>>>,
     params: &CopyParams,
 ) -> CopyEvidence {
-    let len = consensus_length.max(1) as u64;
+    let len = consensus.len().max(1) as u64;
     let mut by_id: HashMap<u64, Vec<&RmHit>> = HashMap::new();
     for h in hits {
         by_id.entry(h.id).or_default().push(h);
@@ -218,7 +218,7 @@ pub fn copy_evidence_from_rm(
             }
         }
         let refs = copies.iter().collect::<Vec<_>>();
-        evidence.tsd = call_tsd(&refs, params);
+        evidence.tsd = call_tsd(&refs, consensus, params);
         evidence.helitron_ends = helitron_ends(&refs);
         evidence.flank_similarity = flank_similarity(&copies, params.flank_window);
     }
@@ -279,7 +279,7 @@ score   div. del. ins.  sequence    begin     end    (left)    repeat         cl
             (c.start, c.end, c.rep_start, c.rep_end),
             (800, 1000, 1, 200)
         );
-        let e = copy_evidence_from_rm(&fams["fam1"], 500, None, &CopyParams::default());
+        let e = copy_evidence_from_rm(&fams["fam1"], &[b'A'; 500], None, &CopyParams::default());
         // insertion 1: full; insertion 2: two fragments covering 1-200 and 301-500 (80%); 3: tandem-like span
         assert_eq!(e.loci, 3);
         assert_eq!(e.full_length, 2);
@@ -330,7 +330,7 @@ score   div. del. ins.  sequence    begin     end    (left)    repeat         cl
         }
         chrom.extend(rnd(300));
         let genome = HashMap::from([("chr1".to_owned(), chrom)]);
-        let e = copy_evidence_from_rm(&hits, 400, Some(&genome), &CopyParams::default());
+        let e = copy_evidence_from_rm(&hits, &element, Some(&genome), &CopyParams::default());
         assert_eq!((e.loci, e.full_length), (6, 6));
         let tsd = e.tsd.unwrap();
         assert_eq!(tsd.length, 5);

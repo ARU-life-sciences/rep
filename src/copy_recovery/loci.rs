@@ -191,24 +191,41 @@ pub fn collapse_overlapping_loci(mut loci: Vec<Locus>) -> Vec<Locus> {
 }
 
 /// Exclude overlapping opposite-strand loci whose coverage is too weak to
-/// decide the copy orientation.
+/// decide the copy orientation. When one covers at least twice as much of the
+/// query, it decides: the other is the shadow of a terminal inverted repeat (or
+/// another palindromic stretch) matching the query backwards, and only it is
+/// excluded, as `opposite_strand_shadow:<locus_id>`.
 pub fn mark_ambiguous_strand_loci(loci: &mut [Locus], threshold: f64) {
     for i in 0..loci.len() {
         for j in (i + 1)..loci.len() {
+            let (ci, cj) = (
+                loci[i].combined_query_coverage,
+                loci[j].combined_query_coverage,
+            );
             if loci[i].family_id == loci[j].family_id
                 && loci[i].subject_id == loci[j].subject_id
                 && loci[i].strand != loci[j].strand
                 && loci[i].start < loci[j].end
                 && loci[j].start < loci[i].end
-                && loci[i]
-                    .combined_query_coverage
-                    .min(loci[j].combined_query_coverage)
-                    < threshold
+                && ci.min(cj) < threshold
             {
-                loci[i].selected = false;
-                loci[j].selected = false;
-                loci[i].exclusion_reason = Some("ambiguous_strand".into());
-                loci[j].exclusion_reason = Some("ambiguous_strand".into());
+                let shadow = if ci >= 2.0 * cj {
+                    Some((j, i))
+                } else if cj >= 2.0 * ci {
+                    Some((i, j))
+                } else {
+                    None
+                };
+                if let Some((weak, strong)) = shadow {
+                    let reason = format!("opposite_strand_shadow:{}", loci[strong].locus_id);
+                    loci[weak].selected = false;
+                    loci[weak].exclusion_reason = Some(reason);
+                    continue;
+                }
+                for k in [i, j] {
+                    loci[k].selected = false;
+                    loci[k].exclusion_reason = Some("ambiguous_strand".into());
+                }
             }
         }
     }
@@ -344,6 +361,27 @@ mod tests {
         assert!(loci
             .iter()
             .all(|l| l.exclusion_reason.as_deref() == Some("ambiguous_strand")));
+    }
+    #[test]
+    fn a_full_length_copy_outweighs_its_inverted_repeat_shadow() {
+        // a TIR element: the whole query matches the copy on the plus strand,
+        // and the 5' TIR also matches its 3' end backwards
+        let mut loci = merge_hits(
+            &[
+                hit(1, 100, 1000, 1099, Strand::Plus),
+                hit(1, 20, 1080, 1099, Strand::Minus),
+            ],
+            10,
+        );
+        mark_ambiguous_strand_loci(&mut loci, 0.8);
+        rank_loci(&mut loci, 10, false);
+        let plus = loci.iter().find(|l| l.strand == Strand::Plus).unwrap();
+        let minus = loci.iter().find(|l| l.strand == Strand::Minus).unwrap();
+        assert!(plus.selected && plus.exclusion_reason.is_none());
+        assert_eq!(
+            minus.exclusion_reason.as_deref(),
+            Some(format!("opposite_strand_shadow:{}", plus.locus_id).as_str())
+        );
     }
     #[test]
     fn ranking_limit_and_ties_are_deterministic() {

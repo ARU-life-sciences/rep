@@ -489,13 +489,14 @@ pub fn run_classify_with_runner(
         let copies = match (&rm_hits, &c.copies_dir) {
             (Some(rm), _) => Some(copy_evidence_from_rm(
                 rm.get(&family.name).map_or(&[][..], Vec::as_slice),
-                family.seq.len(),
+                &family.seq,
                 genome.as_ref(),
                 &c.copy_params,
             )),
             (None, Some(dir)) => read_copy_evidence(
                 &dir.join("families")
                     .join(crate::copy_recovery::family_dir_name(&family.id)),
+                &family.seq,
                 &c.copy_params,
             )?,
             (None, None) => None,

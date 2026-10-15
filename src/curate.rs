@@ -56,6 +56,13 @@ pub struct CurateParams {
     /// manufacture the TIR evidence classify then reads.
     pub snap_min_tir: usize,
     pub snap_min_identity: f64,
+    /// Extended ends are trimmed back by up to `tsd_max_trim` bases where
+    /// that leaves a target-site duplication (up to `tsd_max_length` bp)
+    /// outside at least `tsd_min_copies` copies and `tsd_min_support` of them.
+    pub tsd_max_trim: usize,
+    pub tsd_max_length: usize,
+    pub tsd_min_support: f64,
+    pub tsd_min_copies: usize,
     /// Terminal-repeat search windows and identity (shared with `rep classify`).
     pub structure: StructureParams,
 }
@@ -72,6 +79,10 @@ impl Default for CurateParams {
             min_length_fraction: 0.8,
             snap_min_tir: 25,
             snap_min_identity: 0.9,
+            tsd_max_trim: 10,
+            tsd_max_length: 10,
+            tsd_min_support: 0.7,
+            tsd_min_copies: 5,
             structure: StructureParams::default(),
         }
     }
@@ -296,6 +307,13 @@ fn refine(rows: &[Row], query_len: usize, p: &CurateParams) -> std::result::Resu
     columns.drain(..trim_5);
     added_5 -= trim_5;
     added_3 -= trim_3;
+    let (trim_5, trim_3) = trim_to_tsd(rows, &columns, added_5, added_3, p);
+    seq.truncate(seq.len() - trim_3);
+    seq.drain(..trim_5);
+    columns.truncate(columns.len() - trim_3);
+    columns.drain(..trim_5);
+    added_5 -= trim_5;
+    added_3 -= trim_3;
     if (seq.len() as f64) < p.min_length_fraction * query_len as f64 {
         return Err("shorter_than_query");
     }
@@ -342,6 +360,89 @@ fn snap_to_terminal_repeat(
         }
     }
     (0, 0)
+}
+
+/// Bases to trim from the extended ends so that the copies' flanks carry a
+/// target-site duplication just outside them. A TSD that is the same in
+/// every copy (TA for Tc1/mariner) agrees as well as the element does, so the
+/// extension takes it in; copies' flanks show where the element really ends.
+fn trim_to_tsd(
+    rows: &[Row],
+    columns: &[usize],
+    added_5: usize,
+    added_3: usize,
+    p: &CurateParams,
+) -> (usize, usize) {
+    // bases beyond a duplication, which must differ between copies: within
+    // the element, both sides agree everywhere and chance 2-mer matches pass
+    const OUTSIDE: usize = 4;
+    let n = columns.len();
+    let k = p.tsd_max_length;
+    if added_5 + added_3 == 0 || n < 2 * p.tsd_max_trim + 2 || k < 2 {
+        return (0, 0);
+    }
+    let ungapped = |s: &[u8]| s.iter().copied().filter(|&b| b != b'-' && b != b'.').collect::<Vec<_>>();
+    // flanks of the copies spanning both ends when trimmed by (t5, t3)
+    let flanks = |t5: usize, t3: usize| {
+        let (cs, ce) = (columns[t5], columns[n - 1 - t3]);
+        rows.iter()
+            .filter(|r| r.first < cs && r.last > ce)
+            .map(|r| (ungapped(&r.seq[..cs]), ungapped(&r.seq[ce + 1..])))
+            .filter(|(l, r)| l.len() >= k + OUTSIDE && r.len() >= k + OUTSIDE)
+            .collect::<Vec<_>>()
+    };
+    let has = |(l, r): &(Vec<u8>, Vec<u8>), m: usize| l[l.len() - m..] == r[..m];
+    let fraction = |f: &[(Vec<u8>, Vec<u8>)], m: usize| {
+        if f.is_empty() {
+            0.0
+        } else {
+            f.iter().filter(|x| has(x, m)).count() as f64 / f.len() as f64
+        }
+    };
+    // share of the majority base just outside the duplication, on the more
+    // conserved side
+    let outside_agreement = |f: &[&(Vec<u8>, Vec<u8>)], m: usize| {
+        [true, false]
+            .into_iter()
+            .map(|left| {
+                let mut sum = 0.0;
+                for j in 0..OUTSIDE {
+                    let mut counts = HashMap::new();
+                    for (l, r) in f {
+                        let b = if left { l[l.len() - m - 1 - j] } else { r[m + j] };
+                        *counts.entry(b).or_insert(0usize) += 1;
+                    }
+                    sum += *counts.values().max().unwrap_or(&0) as f64 / f.len() as f64;
+                }
+                sum / OUTSIDE as f64
+            })
+            .fold(0.0, f64::max)
+    };
+    let base = flanks(0, 0);
+    let mut best: Option<(f64, usize, usize)> = None;
+    for t5 in 0..=added_5.min(p.tsd_max_trim) {
+        for t3 in 0..=added_3.min(p.tsd_max_trim) {
+            if t5 + t3 == 0 {
+                continue;
+            }
+            let f = flanks(t5, t3);
+            let Some(m) = (2..=k).rev().find(|&m| {
+                let with = f.iter().filter(|x| has(x, m)).count();
+                with >= p.tsd_min_copies && with as f64 >= p.tsd_min_support * f.len() as f64
+            }) else {
+                continue;
+            };
+            let frac = fraction(&f, m);
+            let with = f.iter().filter(|x| has(x, m)).collect::<Vec<_>>();
+            if frac < 2.0 * fraction(&base, m) || outside_agreement(&with, m) >= 0.75 {
+                continue;
+            }
+            if best.is_none_or(|(b, a5, a3)| frac > b || (frac == b && t5 + t3 < a5 + a3)) {
+                best = Some((frac, t5, t3));
+            }
+        }
+    }
+    best.map_or((0, 0), |(_, t5, t3)| (t5, t3))
 }
 
 /// Where a copy matches the refined consensus: its first and last consensus
