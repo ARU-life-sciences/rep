@@ -21,7 +21,7 @@ use std::{
     sync::Mutex,
 };
 
-use bio::io::fasta;
+use bio::{alignment::AlignmentOperation, io::fasta};
 use serde::Serialize;
 
 use crate::{
@@ -33,6 +33,10 @@ use crate::{
 pub const REFINED: &str = "refined.fa";
 pub const TABLE: &str = "curation.tsv";
 pub const SUMMARY: &str = "curation.json";
+/// Decision log with one row per family, for reviewers to fill in.
+pub const REVIEW: &str = "review.tsv";
+/// Alignment columns shown on each side of a refined end in `review.txt`.
+const REVIEW_VIEW: usize = 30;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CurateParams {
@@ -58,10 +62,13 @@ pub struct CurateParams {
     pub snap_min_identity: f64,
     /// Extended ends are trimmed back by up to `tsd_max_trim` bases where
     /// that leaves a target-site duplication (up to `tsd_max_length` bp)
-    /// outside at least `tsd_min_copies` copies and `tsd_min_support` of them.
+    /// outside at least `tsd_min_copies` copies and `tsd_min_support` of them
+    /// (`tsd_min_support_long` for duplications of 4 bp or more, which arise
+    /// by chance at a sixteenth of the rate of 2 bp ones).
     pub tsd_max_trim: usize,
     pub tsd_max_length: usize,
     pub tsd_min_support: f64,
+    pub tsd_min_support_long: f64,
     pub tsd_min_copies: usize,
     /// Terminal-repeat search windows and identity (shared with `rep classify`).
     pub structure: StructureParams,
@@ -82,6 +89,7 @@ impl Default for CurateParams {
             tsd_max_trim: 10,
             tsd_max_length: 10,
             tsd_min_support: 0.7,
+            tsd_min_support_long: 0.4,
             tsd_min_copies: 5,
             structure: StructureParams::default(),
         }
@@ -123,6 +131,32 @@ pub struct FamilyCuration {
     pub full_length_copies: usize,
     /// `refined`, or why the query was kept.
     pub status: String,
+    /// Terminal repeat the ends snapped to, and the TSD they were trimmed back
+    /// to (empty when neither applied).
+    pub snap: String,
+    pub tsd_trim: String,
+    /// Bases of the raw consensus with no column in the refined alignment.
+    pub raw_unplaced: usize,
+}
+
+impl FamilyCuration {
+    /// What a reviewer should look at first.
+    pub fn flags(&self) -> Vec<&'static str> {
+        let mut f = Vec::new();
+        if self.status != "refined" {
+            return f;
+        }
+        if self.raw_unplaced as f64 > 0.2 * self.query_length as f64 {
+            f.push("raw_consensus_partly_outside_refined");
+        }
+        if self.added_5.max(self.added_3) > 1000 {
+            f.push("extended_over_1kb");
+        }
+        if self.full_length_copies < 3 {
+            f.push("few_full_length_copies");
+        }
+        f
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -191,6 +225,29 @@ struct Refined {
     columns: Vec<usize>,
     added_5: usize,
     added_3: usize,
+    /// How the extended ends were placed, for the review package.
+    snap: Option<Snap>,
+    tsd: Option<TsdTrim>,
+}
+
+/// Extended ends trimmed to the element's own terminal repeat.
+#[derive(Clone, Debug, PartialEq)]
+struct Snap {
+    kind: &'static str,
+    length: usize,
+    identity: f64,
+    trim_5: usize,
+    trim_3: usize,
+}
+
+/// Extended ends trimmed back so that a TSD lies outside them.
+#[derive(Clone, Debug, PartialEq)]
+struct TsdTrim {
+    trim_5: usize,
+    trim_3: usize,
+    length: usize,
+    motif: String,
+    support: f64,
 }
 
 fn refine(rows: &[Row], query_len: usize, p: &CurateParams) -> std::result::Result<Refined, &'static str> {
@@ -300,14 +357,16 @@ fn refine(rows: &[Row], query_len: usize, p: &CurateParams) -> std::result::Resu
     }
     let mut added_5 = columns.iter().take_while(|&&c| c < a0).count();
     let mut added_3 = columns.iter().rev().take_while(|&&c| c > a1).count();
-    let (trim_5, trim_3) = snap_to_terminal_repeat(&seq, added_5, added_3, p);
+    let snap = snap_to_terminal_repeat(&seq, added_5, added_3, p);
+    let (trim_5, trim_3) = snap.as_ref().map_or((0, 0), |s| (s.trim_5, s.trim_3));
     seq.truncate(seq.len() - trim_3);
     seq.drain(..trim_5);
     columns.truncate(columns.len() - trim_3);
     columns.drain(..trim_5);
     added_5 -= trim_5;
     added_3 -= trim_3;
-    let (trim_5, trim_3) = trim_to_tsd(rows, &columns, added_5, added_3, p);
+    let tsd = trim_to_tsd(rows, &columns, added_5, added_3, p);
+    let (trim_5, trim_3) = tsd.as_ref().map_or((0, 0), |t| (t.trim_5, t.trim_3));
     seq.truncate(seq.len() - trim_3);
     seq.drain(..trim_5);
     columns.truncate(columns.len() - trim_3);
@@ -322,6 +381,8 @@ fn refine(rows: &[Row], query_len: usize, p: &CurateParams) -> std::result::Resu
         columns,
         added_5,
         added_3,
+        snap,
+        tsd,
     })
 }
 
@@ -335,15 +396,15 @@ fn snap_to_terminal_repeat(
     added_5: usize,
     added_3: usize,
     p: &CurateParams,
-) -> (usize, usize) {
+) -> Option<Snap> {
     if added_5 + added_3 == 0 {
-        return (0, 0);
+        return None;
     }
     let slack = added_5.max(added_3);
     let s = &p.structure;
-    for (inverted, window, min_length, identity) in [
-        (false, s.ltr_window, s.ltr_min_length, s.terminal_min_identity),
-        (true, s.tir_window, p.snap_min_tir, p.snap_min_identity),
+    for (kind, inverted, window, min_length, identity) in [
+        ("LTR", false, s.ltr_window, s.ltr_min_length, s.terminal_min_identity),
+        ("TIR", true, s.tir_window, p.snap_min_tir, p.snap_min_identity),
     ] {
         let window = window + slack;
         if let Some(r) = structure::terminal_repeat(
@@ -355,11 +416,17 @@ fn snap_to_terminal_repeat(
             slack,
         ) {
             if r.five_prime_offset <= added_5 && r.three_prime_offset <= added_3 {
-                return (r.five_prime_offset, r.three_prime_offset);
+                return Some(Snap {
+                    kind,
+                    length: r.length,
+                    identity: r.identity,
+                    trim_5: r.five_prime_offset,
+                    trim_3: r.three_prime_offset,
+                });
             }
         }
     }
-    (0, 0)
+    None
 }
 
 /// Bases to trim from the extended ends so that the copies' flanks carry a
@@ -372,14 +439,14 @@ fn trim_to_tsd(
     added_5: usize,
     added_3: usize,
     p: &CurateParams,
-) -> (usize, usize) {
+) -> Option<TsdTrim> {
     // bases beyond a duplication, which must differ between copies: within
     // the element, both sides agree everywhere and chance 2-mer matches pass
     const OUTSIDE: usize = 4;
     let n = columns.len();
     let k = p.tsd_max_length;
     if added_5 + added_3 == 0 || n < 2 * p.tsd_max_trim + 2 || k < 2 {
-        return (0, 0);
+        return None;
     }
     let ungapped = |s: &[u8]| s.iter().copied().filter(|&b| b != b'-' && b != b'.').collect::<Vec<_>>();
     // flanks of the copies spanning both ends when trimmed by (t5, t3)
@@ -419,7 +486,7 @@ fn trim_to_tsd(
             .fold(0.0, f64::max)
     };
     let base = flanks(0, 0);
-    let mut best: Option<(f64, usize, usize)> = None;
+    let mut best: Option<TsdTrim> = None;
     for t5 in 0..=added_5.min(p.tsd_max_trim) {
         for t3 in 0..=added_3.min(p.tsd_max_trim) {
             if t5 + t3 == 0 {
@@ -428,7 +495,8 @@ fn trim_to_tsd(
             let f = flanks(t5, t3);
             let Some(m) = (2..=k).rev().find(|&m| {
                 let with = f.iter().filter(|x| has(x, m)).count();
-                with >= p.tsd_min_copies && with as f64 >= p.tsd_min_support * f.len() as f64
+                let floor = if m >= 4 { p.tsd_min_support_long } else { p.tsd_min_support };
+                with >= p.tsd_min_copies && with as f64 >= floor * f.len() as f64
             }) else {
                 continue;
             };
@@ -437,12 +505,44 @@ fn trim_to_tsd(
             if frac < 2.0 * fraction(&base, m) || outside_agreement(&with, m) >= 0.75 {
                 continue;
             }
-            if best.is_none_or(|(b, a5, a3)| frac > b || (frac == b && t5 + t3 < a5 + a3)) {
-                best = Some((frac, t5, t3));
+            // a longer duplication first: a shorter one nested in it always has at
+            // least its support (TTAA ends read as TA, or TT at a misplaced trim)
+            let mut motifs: HashMap<&[u8], usize> = HashMap::new();
+            for (l, _) in &with {
+                *motifs.entry(&l[l.len() - m..]).or_default() += 1;
+            }
+            let motif = motifs
+                .into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+                .map(|(m, _)| m.to_vec())
+                .unwrap_or_default();
+            // A-rich (or other one-base) duplications of 4 bp or more are poly-A
+            // tails or A-rich target sites matching by chance, at the lower floor
+            let top = b"ACGT"
+                .iter()
+                .map(|b| motif.iter().filter(|&x| x == b).count())
+                .max()
+                .unwrap_or(0);
+            if m >= 4 && 4 * top > 3 * m {
+                continue;
+            }
+            if best.as_ref().is_none_or(|b| {
+                (m, frac, std::cmp::Reverse(t5 + t3))
+                    .partial_cmp(&(b.length, b.support, std::cmp::Reverse(b.trim_5 + b.trim_3)))
+                    == Some(std::cmp::Ordering::Greater)
+            }) {
+                let motif = String::from_utf8_lossy(&motif).into_owned();
+                best = Some(TsdTrim {
+                    trim_5: t5,
+                    trim_3: t3,
+                    length: m,
+                    motif,
+                    support: frac,
+                });
             }
         }
     }
-    best.map_or((0, 0), |(_, t5, t3)| (t5, t3))
+    best
 }
 
 /// Where a copy matches the refined consensus: its first and last consensus
@@ -567,6 +667,140 @@ fn rows_of(dir: &Path) -> Result<Vec<Row>> {
     Ok(rows)
 }
 
+/// The raw consensus in alignment columns, through its alignment to the
+/// refined consensus, and the number of its bases with no refined column.
+fn place_query(query: &[u8], r: &Refined, width: usize) -> (Vec<u8>, usize) {
+    let mut row = vec![b'-'; width];
+    let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+    let mut aligner = bio::alignment::pairwise::banded::Aligner::new(-5, -1, score, 8, 20);
+    let mut a = aligner.semiglobal(query, &r.seq);
+    // the band follows shared k-mers; large indels between the consensi need full DP
+    let aligned = |a: &bio::alignment::Alignment| {
+        a.operations
+            .iter()
+            .filter(|o| matches!(o, AlignmentOperation::Match | AlignmentOperation::Subst))
+            .count()
+    };
+    if (aligned(&a) as f64) < 0.9 * query.len().min(r.seq.len()) as f64
+        && query.len() * r.seq.len() <= QUERY_PLACEMENT_MAX_CELLS
+    {
+        // local: a raw consensus only partly inside the refined one (a chimera, an
+        // inverted duplication) still places its shared part
+        let full = bio::alignment::pairwise::Aligner::new(-5, -1, score).local(query, &r.seq);
+        if full.score > a.score {
+            a = full;
+        }
+    }
+    if a.score <= 0 {
+        return (row, query.len());
+    }
+    let (mut x, mut y, mut placed) = (a.xstart, a.ystart, 0);
+    for op in &a.operations {
+        match *op {
+            AlignmentOperation::Match | AlignmentOperation::Subst => {
+                row[r.columns[y]] = query[x];
+                placed += 1;
+                x += 1;
+                y += 1;
+            }
+            AlignmentOperation::Del => y += 1,
+            AlignmentOperation::Ins => x += 1,
+            AlignmentOperation::Xclip(n) => x += n,
+            AlignmentOperation::Yclip(n) => y += n,
+        }
+    }
+    (row, query.len() - placed)
+}
+
+/// Largest raw x refined consensus (in DP cells) aligned without a band.
+const QUERY_PLACEMENT_MAX_CELLS: usize = 40_000_000;
+
+fn wrap(seq: &[u8]) -> String {
+    seq.chunks(60)
+        .map(|c| String::from_utf8_lossy(c).into_owned() + "\n")
+        .collect()
+}
+
+/// Review package of one refined family: `review.aligned.fa` (the copies
+/// with the refined and raw consensi as the first two rows, so both versions
+/// live in the alignment) and `review.txt` (how the ends were placed, and the
+/// alignment around each end, where termini and TSDs are checked). Records
+/// the raw consensus bases that could not be placed in the alignment.
+fn write_review(
+    dir: &Path,
+    f: &mut FamilyCuration,
+    query: &[u8],
+    rows: &[Row],
+    r: &Refined,
+) -> Result<()> {
+    let width = rows[0].seq.len();
+    let mut refined_row = vec![b'-'; width];
+    for (&c, &b) in r.columns.iter().zip(&r.seq) {
+        refined_row[c] = b;
+    }
+    let (raw_row, unplaced) = place_query(query, r, width);
+    f.raw_unplaced = unplaced;
+    let (c5, c3) = (r.columns[0], r.columns[r.columns.len() - 1]);
+    let mut fa = format!(
+        ">refined_consensus length={} columns={}-{}\n{}",
+        r.seq.len(),
+        c5 + 1,
+        c3 + 1,
+        wrap(&refined_row)
+    );
+    fa += &format!(
+        ">raw_consensus length={} unplaced_bases={unplaced}\n{}",
+        query.len(),
+        wrap(&raw_row)
+    );
+    for row in rows {
+        fa += &format!(">{}\n{}", row.locus_id, wrap(&row.seq));
+    }
+    fs::write(dir.join("review.aligned.fa"), fa)?;
+
+    let none = |s: &str| if s.is_empty() { "none".to_owned() } else { s.to_owned() };
+    let mut txt = format!(
+        "family\t{}\nstatus\t{}\nquery_length\t{}\nrefined_length\t{}\nadded\t5' {} bp, 3' {} bp\n\
+         copies_aligned\t{}\nfull_length_copies\t{} (>=80% of the refined consensus)\n\
+         terminal_repeat_snap\t{}\ntsd_trim\t{}\nraw_bases_unplaced\t{unplaced}\nflags\t{}\n",
+        f.family_id,
+        f.status,
+        f.query_length,
+        f.refined_length,
+        f.added_5,
+        f.added_3,
+        f.copies,
+        f.full_length_copies,
+        none(&f.snap),
+        none(&f.tsd_trim),
+        none(&f.flags().join(",")),
+    );
+    let pad = rows.iter().map(|r| r.locus_id.len()).max().unwrap_or(0).max(9) + 2;
+    for (name, lo, at) in [
+        ("5' end", c5.saturating_sub(REVIEW_VIEW), c5),
+        ("3' end", (c3 + 1).saturating_sub(REVIEW_VIEW), c3),
+    ] {
+        let hi = (lo + 2 * REVIEW_VIEW).min(width);
+        txt += &format!(
+            "\n{name}: alignment columns {}-{} ('^' marks the {} base of the refined consensus)\n",
+            lo + 1,
+            hi,
+            if name.starts_with('5') { "first" } else { "last" }
+        );
+        let mut line = |label: &str, row: &[u8]| {
+            txt += &format!("{label:<pad$}{}\n", String::from_utf8_lossy(&row[lo..hi]));
+        };
+        line("refined", &refined_row);
+        line("raw", &raw_row);
+        for row in rows {
+            line(&row.locus_id, &row.seq);
+        }
+        txt += &format!("{:<pad$}{}^\n", "", " ".repeat(at - lo));
+    }
+    fs::write(dir.join("review.txt"), txt)?;
+    Ok(())
+}
+
 /// Rewrite a recover-copies TSV, applying `edit` to rows of fitted copies.
 fn rewrite_tsv(
     from: &Path,
@@ -611,6 +845,9 @@ fn curate_family(dir: &Path, out: &Path, p: &CurateParams) -> Result<(FamilyCura
         added_3: 0,
         full_length_copies: 0,
         status: String::new(),
+        snap: String::new(),
+        tsd_trim: String::new(),
+        raw_unplaced: 0,
     };
     let extended = dir.join("copies.extended.fa");
     if extended.is_file() {
@@ -628,6 +865,14 @@ fn curate_family(dir: &Path, out: &Path, p: &CurateParams) -> Result<(FamilyCura
             fs::write(
                 fam_out.join("query.fa"),
                 format!(">{family_id}\n{}\n", String::from_utf8_lossy(&query_seq)),
+            )?;
+            fs::write(
+                fam_out.join("review.txt"),
+                format!(
+                    "family\t{family_id}\nstatus\t{why} (kept as queried)\nquery_length\t{}\ncopies_aligned\t{}\n",
+                    query_seq.len(),
+                    rows.len()
+                ),
             )?;
             return Ok((record, query_seq));
         }
@@ -652,6 +897,16 @@ fn curate_family(dir: &Path, out: &Path, p: &CurateParams) -> Result<(FamilyCura
     record.added_5 = refined.added_5;
     record.added_3 = refined.added_3;
     record.full_length_copies = fits.values().filter(|f| f.coverage >= 0.8).count();
+    record.snap = refined.snap.as_ref().map_or(String::new(), |s| {
+        format!("{}:{}bp@{:.2},trimmed={}/{}", s.kind, s.length, s.identity, s.trim_5, s.trim_3)
+    });
+    record.tsd_trim = refined.tsd.as_ref().map_or(String::new(), |t| {
+        format!(
+            "{}bp({}),support={:.2},trimmed={}/{}",
+            t.length, t.motif, t.support, t.trim_5, t.trim_3
+        )
+    });
+    write_review(&fam_out, &mut record, &query_seq, &rows, &refined)?;
 
     // copies.tsv: flanks and genomic ends of fitted copies at the refined boundaries
     rewrite_tsv(&dir.join("copies.tsv"), &fam_out.join("copies.tsv"), |ix, f| {
@@ -727,6 +982,10 @@ pub fn run_curate(c: &CurateConfig) -> Result<CurateSummary> {
     let mut table = String::from(
         "family_id\tquery_length\trefined_length\tcopies\tadded_5\tadded_3\tfull_length_copies\tstatus\n",
     );
+    let mut review = String::from(
+        "family_id\tstatus\tquery_length\trefined_length\tcopies\tfull_length_copies\tadded_5\tadded_3\t\
+         terminal_repeat_snap\ttsd_trim\traw_unplaced\tflags\treview_dir\treviewer\tdecision\tnotes\n",
+    );
     for (_, r) in results {
         let (f, seq) = r?;
         summary.families += 1;
@@ -752,9 +1011,26 @@ pub fn run_curate(c: &CurateConfig) -> Result<CurateSummary> {
             f.full_length_copies,
             f.status
         );
+        review += &format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\tfamilies/{}\t\t\t\n",
+            f.family_id,
+            f.status,
+            f.query_length,
+            f.refined_length,
+            f.copies,
+            f.full_length_copies,
+            f.added_5,
+            f.added_3,
+            f.snap,
+            f.tsd_trim,
+            f.raw_unplaced,
+            f.flags().join(","),
+            family_dir_name(&f.family_id)
+        );
     }
     fs::write(c.out.join(REFINED), fasta)?;
     fs::write(c.out.join(TABLE), table)?;
+    fs::write(c.out.join(REVIEW), review)?;
     fs::write(
         c.out.join(SUMMARY),
         serde_json::to_string_pretty(&serde_json::json!({

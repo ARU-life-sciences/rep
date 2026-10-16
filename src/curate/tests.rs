@@ -273,3 +273,67 @@ fn a_conserved_tsd_taken_into_the_extension_is_trimmed_off() {
     let r = refine(&rows, 300, &CurateParams::default()).unwrap();
     assert_eq!(r.seq, element);
 }
+
+#[test]
+fn the_review_package_holds_both_consensi_and_the_end_views() {
+    let dir = tempfile::tempdir().unwrap();
+    let element = random(600, 1);
+    let rec = dir.path().join("rec");
+    family(
+        &rec.join("families/fam1_Unknown"),
+        &element[150..450],
+        &element_copies(&element, 8, 300),
+        300,
+        (150, 450),
+    );
+    run_curate(&CurateConfig::new(rec, dir.path().join("out"))).unwrap();
+    let fam = dir.path().join("out/families/fam1_Unknown");
+    let aligned = read_fasta(&fam.join("review.aligned.fa")).unwrap();
+    assert_eq!(aligned.len(), 2 + 8);
+    assert_eq!(aligned[0].0, "refined_consensus");
+    assert_eq!(aligned[1].0, "raw_consensus");
+    assert!(aligned.iter().all(|(_, s)| s.len() == aligned[2].1.len()));
+    // the raw consensus sits in the columns of the copies it came from
+    let ungapped = |s: &[u8]| s.iter().copied().filter(|&b| b != b'-').collect::<Vec<_>>();
+    assert_eq!(ungapped(&aligned[1].1), &element[150..450]);
+    let at = aligned[1].1.iter().position(|&b| b != b'-').unwrap();
+    // (copies carry a planted mutation every 17 bases)
+    let same = (at..at + 34).filter(|&c| aligned[2].1[c] == aligned[1].1[c]).count();
+    assert!(same >= 32, "{same}");
+    let txt = fs::read_to_string(fam.join("review.txt")).unwrap();
+    assert!(txt.contains("raw_bases_unplaced\t0"), "{txt}");
+    assert!(txt.contains("5' end: alignment columns") && txt.contains("3' end: alignment columns"));
+    let review = fs::read_to_string(dir.path().join("out").join(REVIEW)).unwrap();
+    let row = review.lines().nth(1).unwrap().split('\t').collect::<Vec<_>>();
+    assert_eq!((row[0], row[1], row[12]), ("fam1#Unknown", "refined", "families/fam1_Unknown"));
+    assert_eq!(row.len(), 16);
+}
+
+#[test]
+fn a_degraded_ttaa_tsd_is_trimmed_off_whole() {
+    // piggyBac-like: TTAA duplications intact in only half the copies (old
+    // insertions), too few for a 2 bp TSD but enough for a 4 bp one
+    let element = [b"CCCT".to_vec(), random(600, 9), b"AGGG".to_vec()].concat();
+    let copies = (0..12u64)
+        .map(|i| {
+            let tsd = if i % 2 == 0 { b"TTAA".to_vec() } else { random(4, 300 + i) };
+            let right = if i % 2 == 0 { b"TTAA".to_vec() } else { random(4, 400 + i) };
+            [random(300, 100 + i), tsd, mutate(&element, 23, i as usize), right, random(300, 200 + i)].concat()
+        })
+        .collect::<Vec<_>>();
+    let rows = copies
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Row {
+            locus_id: i.to_string(),
+            seq: s.clone(),
+            first: 0,
+            last: s.len() - 1,
+            core: (404, 703),
+        })
+        .collect::<Vec<_>>();
+    let r = refine(&rows, 300, &CurateParams::default()).unwrap();
+    let tsd = r.tsd.expect("a TSD trim");
+    assert_eq!((tsd.length, tsd.motif.as_str()), (4, "TTAA"));
+    assert_eq!(r.seq, element);
+}
