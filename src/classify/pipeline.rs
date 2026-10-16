@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     copies::{read_copy_evidence, CopyEvidence, CopyParams},
+    neighbours::{adjacency, apply_neighbours, read_partner_labels, NeighbourParams},
     decide::{
         apply_copy_evidence, apply_host_domains, decide, is_non_te, respect_original_label,
         DecisionThresholds, Disposition, DispositionKind,
@@ -72,6 +73,14 @@ pub struct ClassifyConfig {
     pub rm_out: Option<PathBuf>,
     /// Genome FASTA (plain or .gz) for TSD and flank analysis with `rm_out`.
     pub genome: Option<PathBuf>,
+    /// RepeatMasker `.out` of the genome (with this library or the one it was
+    /// curated from) for genomic-neighbour evidence: an Unknown whose copies
+    /// sit next to one classified family takes its class.
+    pub neighbours: Option<PathBuf>,
+    /// `rep classify` tables labelling the neighbouring families; only labels
+    /// backed by protein, nucleotide or domain evidence are used.
+    pub neighbour_labels: Vec<PathBuf>,
+    pub neighbour_params: NeighbourParams,
     pub copy_params: CopyParams,
     pub output_dir: PathBuf,
     /// Classify every family, not only `Unknown`s (useful for validation).
@@ -104,6 +113,9 @@ impl ClassifyConfig {
             copies_dir: None,
             rm_out: None,
             genome: None,
+            neighbours: None,
+            neighbour_labels: Vec::new(),
+            neighbour_params: NeighbourParams::default(),
             copy_params: CopyParams::default(),
             output_dir,
             all_families: false,
@@ -462,6 +474,19 @@ pub fn run_classify_with_runner(
         _ => None,
     };
 
+    // genomic neighbours: adjacency in an annotation, labels of the partners
+    let neighbours = match &c.neighbours {
+        Some(path) => {
+            eprintln!("Reading neighbours from {}", path.display());
+            let hits = match (&c.rm_out, &rm_hits) {
+                (Some(p), Some(h)) if p == path => adjacency(h, &c.neighbour_params),
+                _ => adjacency(&read_rm_out(path)?, &c.neighbour_params),
+            };
+            Some((hits, read_partner_labels(&c.neighbour_labels)?))
+        }
+        None => None,
+    };
+
     let classifier = c.model.as_deref().map(Classifier::load).transpose()?;
     let mut families = Vec::new();
     let mut feature_rows = vec![features::header()];
@@ -503,6 +528,9 @@ pub fn run_classify_with_runner(
         };
         if let Some(evidence) = &copies {
             disposition = apply_copy_evidence(disposition, evidence, family.seq.len());
+        }
+        if let Some((adj, labels)) = &neighbours {
+            disposition = apply_neighbours(disposition, adj.get(&family.name), labels, &c.neighbour_params);
         }
         if let Some(host) = host_by_family.get(&family.id) {
             disposition = apply_host_domains(disposition, host, &structure, copies.as_ref());

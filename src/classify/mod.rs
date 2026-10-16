@@ -13,6 +13,7 @@ mod features;
 mod homology;
 mod library;
 mod model;
+mod neighbours;
 mod pipeline;
 mod relabel;
 mod relatives;

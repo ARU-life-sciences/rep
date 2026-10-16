@@ -455,6 +455,21 @@ fn classify_command() -> clap::Command {
                 .value_parser(value_parser!(PathBuf)),
         )
         .arg(
+            Arg::new("neighbours")
+                .long("neighbours")
+                .help("RepeatMasker .out of the genome: an Unknown whose copies sit next to one classified family takes its class")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("neighbour-labels")
+                .long("neighbour-labels")
+                .requires("neighbours")
+                .num_args(1..)
+                .action(ArgAction::Append)
+                .help("rep classify tables labelling the neighbouring families (homology-backed labels only)")
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
             Arg::new("model")
                 .long("model")
                 .help("Learned classifier run beside the rule cascade (default with --refdb: <db>/build/classifier.json)")
@@ -541,6 +556,11 @@ where
     config.copies_dir = m.get_one::<PathBuf>("copies").cloned();
     config.rm_out = m.get_one::<PathBuf>("rm-out").cloned();
     config.genome = m.get_one::<PathBuf>("genome").cloned();
+    config.neighbours = m.get_one::<PathBuf>("neighbours").cloned();
+    config.neighbour_labels = m
+        .get_many::<PathBuf>("neighbour-labels")
+        .map(|v| v.cloned().collect())
+        .unwrap_or_default();
     config.nucl_task = m.get_one::<String>("nucl-task").expect("defaulted").clone();
     config.nucl_evalue = *m.get_one::<f64>("nucl-evalue").expect("defaulted");
     config.threads = *m.get_one::<usize>("threads").expect("defaulted");
