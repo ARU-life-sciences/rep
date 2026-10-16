@@ -402,7 +402,11 @@ pub fn decide(
     let structural_label = if structure.ltr.is_some() {
         Some(("LTR/Unknown", Confidence::Medium))
     } else if structure.tir.is_some() {
-        Some(("DNA/Unknown", Confidence::Medium))
+        // a TIR alone is not enough: over 17 moss genomes, TIR-only families
+        // matched the termini of transposase-encoding families no more often
+        // than LTR/LINE families did. A TSD in the copies restores DNA.
+        evidence.push(TIR_ONLY.into());
+        Some(("Unknown", Confidence::Low))
     } else if structure.tail.is_some() && coding {
         Some(("LINE/Unknown", Confidence::Low))
     } else if structure.helitron_termini {
@@ -436,6 +440,9 @@ pub fn decide(
         warnings,
     }
 }
+
+/// Evidence tag of a family whose only TE hallmark is a terminal inverted repeat.
+pub const TIR_ONLY: &str = "tir_only_putative_mite";
 
 /// Label written for families explained as multicopy host genes.
 pub const HOST_GENE_LABEL: &str = "Other/host_gene";
@@ -523,6 +530,11 @@ pub fn apply_copy_evidence(mut d: Disposition, c: &CopyEvidence, length: usize) 
             }
         }
         DispositionKind::NovelCandidate => {
+            if c.tsd.is_some() && d.label == "Unknown" && d.evidence.iter().any(|e| e == TIR_ONLY) {
+                d.label = "DNA/Unknown".into();
+                d.confidence = Confidence::Low;
+                d.evidence.push("tir_with_tsd".into());
+            }
             if let Some(tsd) = &c.tsd {
                 let hints = superfamilies_with_tsd(top_level(&d.label), tsd.length);
                 if !hints.is_empty() {
@@ -1104,6 +1116,34 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w == "tsd_inconsistent_with:DNA/hAT"));
+    }
+
+    #[test]
+    fn a_tir_alone_stays_unknown_until_copies_show_a_tsd() {
+        let mut s = analyse(&random(1500, 5), &StructureParams::default());
+        s.tir = Some(TerminalRepeat {
+            length: 30,
+            identity: 0.95,
+            five_prime_offset: 0,
+            three_prime_offset: 0,
+        });
+        let d = decide(
+            &HomologySummary::default(),
+            &HomologySummary::default(),
+            &DomainEvidence::default(),
+            &s,
+            &DecisionThresholds::default(),
+        );
+        assert_eq!(
+            (d.kind, d.label.as_str(), d.confidence),
+            (DispositionKind::NovelCandidate, "Unknown", Confidence::Low)
+        );
+        assert!(d.evidence.iter().any(|e| e == TIR_ONLY));
+        let without = apply_copy_evidence(d.clone(), &copies(30, 10, None, 0.3), 1500);
+        assert_eq!(without.label, "Unknown");
+        let with = apply_copy_evidence(d, &copies(30, 10, Some((8, 0.7)), 0.3), 1500);
+        assert_eq!((with.label.as_str(), with.confidence), ("DNA/Unknown", Confidence::Low));
+        assert!(with.evidence.iter().any(|e| e == "tsd_suggests:DNA/hAT,DNA/MULE,DNA/P,DNA/Merlin"));
     }
 
     #[test]
