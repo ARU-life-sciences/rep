@@ -3,7 +3,8 @@
 //!
 //! A family is a reference when the cascade called it a TE (`known_te` or
 //! `chimeric` with a TE label) or the learned classifier decided it; families
-//! labelled from relatives are left out, so labels do not travel along chains.
+//! labelled from relatives or genomic neighbours are left out, so labels do not
+//! travel along chains.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -45,7 +46,7 @@ fn is_reference(row: &std::collections::HashMap<String, String>) -> bool {
     let label = get("label");
     match get("decided_by") {
         "model" => true,
-        "relative" => false,
+        "relative" | "neighbour" => false,
         _ => {
             matches!(get("disposition"), "known_te" | "chimeric")
                 && !label.is_empty()
@@ -154,8 +155,9 @@ mod tests {
                  a2#Unknown\tUnknown\tunresolved\tLINE/L2\tmedium\tmodel\n\
                  a3#Unknown\tUnknown\tinterspersed_repeat\tLTR/Gypsy\tlow\trelative\n\
                  a4#Unknown\tUnknown\tunresolved\tUnknown\tlow\tcascade\n\
-                 a5#Unknown\tUnknown\tsatellite\tSatellite\tmedium\tcascade\n",
-                ">a1#Unknown\nacgt\n>a2#Unknown\nAAAA\n>a3#Unknown\nCCCC\n>a4#Unknown\nGGGG\n>a5#Unknown\nTTTT\n",
+                 a5#Unknown\tUnknown\tsatellite\tSatellite\tmedium\tcascade\n\
+                 a6#Unknown\tUnknown\tknown_te\tLTR/Gypsy\tmedium\tneighbour\n",
+                ">a1#Unknown\nacgt\n>a2#Unknown\nAAAA\n>a3#Unknown\nCCCC\n>a4#Unknown\nGGGG\n>a5#Unknown\nTTTT\n>a6#Unknown\nGGCC\n",
             ),
             (
                 "fly_b",

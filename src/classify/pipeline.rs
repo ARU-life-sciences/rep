@@ -229,6 +229,8 @@ pub enum DecidedBy {
     Model,
     /// A related TE-called family ([`relatives`]).
     Relative,
+    /// The labelled family next to the family's copies ([`apply_neighbours`]).
+    Neighbour,
 }
 
 impl DecidedBy {
@@ -237,6 +239,7 @@ impl DecidedBy {
             Self::Cascade => "cascade",
             Self::Model => "model",
             Self::Relative => "relative",
+            Self::Neighbour => "neighbour",
         }
     }
 }
@@ -529,8 +532,11 @@ pub fn run_classify_with_runner(
         if let Some(evidence) = &copies {
             disposition = apply_copy_evidence(disposition, evidence, family.seq.len());
         }
+        let mut neighbour_label = None;
         if let Some((adj, labels)) = &neighbours {
+            let before = disposition.label.clone();
             disposition = apply_neighbours(disposition, adj.get(&family.name), labels, &c.neighbour_params);
+            neighbour_label = Some(disposition.label.clone()).filter(|l| *l != before);
         }
         if let Some(host) = host_by_family.get(&family.id) {
             disposition = apply_host_domains(disposition, host, &structure, copies.as_ref());
@@ -594,6 +600,13 @@ pub fn run_classify_with_runner(
                     "disagree".to_owned()
                 }
             });
+        let decided_by = if cascade_label.is_some() {
+            DecidedBy::Model
+        } else if neighbour_label.as_ref() == Some(&disposition.label) {
+            DecidedBy::Neighbour
+        } else {
+            DecidedBy::Cascade
+        };
         families.push(FamilyClassification {
             family_id: family.id.clone(),
             name: family.name.clone(),
@@ -606,11 +619,7 @@ pub fn run_classify_with_runner(
             copies,
             structure,
             model,
-            decided_by: if cascade_label.is_some() {
-                DecidedBy::Model
-            } else {
-                DecidedBy::Cascade
-            },
+            decided_by,
             cascade_label,
             relative: None,
         });
@@ -656,9 +665,11 @@ fn resolve_from_relatives(
                     | DispositionKind::NovelCandidate
             )
     };
+    // never a label from neighbours, so inferred labels do not travel further
     let reference = |f: &FamilyClassification| {
         f.decided_by == DecidedBy::Model
-            || (matches!(
+            || (f.decided_by != DecidedBy::Neighbour
+                && matches!(
                 f.disposition.kind,
                 DispositionKind::KnownTe | DispositionKind::Chimeric
             ) && !is_non_te(&f.disposition.label)
@@ -1389,6 +1400,8 @@ mod tests {
         nucl_hits: String,
         /// For the second pass's searches (`*relatives_hits.tsv`).
         relative_hits: String,
+        /// The library's own reference families, as indexed for the second pass.
+        library_references: std::cell::RefCell<String>,
     }
 
     impl CommandRunner for MockRunner {
@@ -1397,6 +1410,11 @@ mod tests {
                 .get_args()
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
+            if let Some(i) = args.iter().position(|a| a == "-in") {
+                if args[i + 1].ends_with("library_relatives.fa") {
+                    *self.library_references.borrow_mut() = fs::read_to_string(&args[i + 1])?;
+                }
+            }
             if let Some(i) = args.iter().position(|a| a == "-out") {
                 if args.iter().any(|a| a == "-query") {
                     let blastn = cmd.get_program().to_string_lossy().ends_with("blastn");
@@ -1575,6 +1593,53 @@ mod tests {
         );
         assert_eq!(r.summary.resolved_by_relatives["medium"], 1);
         assert_eq!(r.summary.resolved_by_relatives["low"], 1);
+    }
+
+    #[test]
+    fn neighbour_labels_are_not_references_for_relatives() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = format!(
+            ">fam1#Unknown\n{}\n>famN#Unknown\n{}\n>famU#Unknown\n{}\n",
+            random(3000, 1),
+            random(500, 2),
+            random(800, 3)
+        );
+        let lib = dir.path().join("lib.fa");
+        fs::write(&lib, library).unwrap();
+        let proteins = dir.path().join("p.fa");
+        fs::write(&proteins, ">Gypsy-1_xx\nMKV\n").unwrap();
+        // six famN copies, each right before a fam1 copy
+        let mut rm = String::new();
+        for i in 0..6 {
+            let c = format!("chr{i}");
+            rm += &format!("500 10.0 0.0 0.0 {c} 1001 1500 (100) + famN Unknown 1 500 (0) 1\n");
+            rm += &format!("900 10.0 0.0 0.0 {c} 1510 4500 (100) + fam1 Unknown 1 3000 (0) 2\n");
+        }
+        let rm_out = dir.path().join("genome.out");
+        fs::write(&rm_out, rm).unwrap();
+        let labels = dir.path().join("labels.tsv");
+        fs::write(
+            &labels,
+            "family_id\tlabel\tevidence\nfam1#Unknown\tLTR/Gypsy\tprotein:Gypsy-1_xx\n",
+        )
+        .unwrap();
+        let runner = MockRunner {
+            hits: "fam1#Unknown\tGypsy-1_xx\t3000\t600\t40.0\t300\t1\t1200\t1\t400\t1e-40\t350\n"
+                .into(),
+            ..Default::default()
+        };
+        let mut config = ClassifyConfig::new(lib, proteins, dir.path().join("out"));
+        config.neighbours = Some(rm_out);
+        config.neighbour_labels = vec![labels];
+        let r = run_classify_with_runner(&config, &runner).unwrap();
+        let n = r.families.iter().find(|f| f.name == "famN").unwrap();
+        assert_eq!(
+            (n.disposition.label.as_str(), n.decided_by.as_str()),
+            ("LTR/Gypsy", "neighbour")
+        );
+        let refs = runner.library_references.borrow();
+        assert!(refs.contains(">library|fam1#LTR/Gypsy"));
+        assert!(!refs.contains("famN"));
     }
 
     #[test]

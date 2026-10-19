@@ -486,10 +486,11 @@ fn member_from_row(
     // a reference label: our own confident TE call (the learned classifier's
     // decision, or a cascade call above low confidence), else RepeatClassifier's
     // TE label where we did not contradict its class; never a label from relatives
+    // or neighbours
     let usable = |l: &str| !l.is_empty() && !l.starts_with("Unknown") && !is_non_te(l);
     let decided_by = get("decided_by");
     let reference = match decided_by.as_str() {
-        "relative" => None,
+        "relative" | "neighbour" => None,
         "model" if usable(&label) => Some(label.clone()),
         _ if matches!(disposition.as_str(), "known_te" | "chimeric")
             && confidence != "low"
