@@ -336,17 +336,33 @@ plus two liverworts, 15.4 Gb in total. Stage 1 `--rmo_only` (RepeatModeler -LTRS
 then `discover`. The earlier *Ptychomitrium polyphyllum* run (rep 96af2f3) left 387 of 430 families
 Unknown with only 4 known TEs.
 
-### M6 – `rep annotate`: one-stop TE identification for any sequence (CENSOR replacement)
+Unknown push, 17 mosses (2026-10-16 to 10-19, `rep_moss_panel/curation_r1/`): every Unknown family
+curated (`rep curate`, review packages) and reclassified with copy, TSD, TIR and neighbour evidence.
+Unknown share of repeat bases 30.5% → 20.2% (684 → 453 Mb; `final_share_classify2.tsv`). Relatives
+calls held out on the panel's non-coding segments: 97% right; neighbour-labelled families no longer
+serve as their references. 762 long ORFs with no Pfam or TE-protein hit form 15 groups shared by ≥3
+mosses with a coding signal close to known transposases; HHsearch (Pfam, PDB70) found nothing
+confident (g5: weak DNA-methyltransferase hits; g7: likely an Athila-like Gypsy accessory ORF).
+
+### M6 – `rep annotate`: one-stop TE identification for any sequence (CENSOR replacement) (core done)
 
 GIRI's CENSOR screens arbitrary sequences against Repbase and reports classified fragments.
-`rep annotate` would do the same against the merged database:
+`rep annotate` does the same against the merged database:
 
-- Input any FASTA: contigs, BACs, transcripts, or a single element.
-- Nucleotide and translated search against `refdb`, then fragment chaining (reusing copy
-  recovery's merging) and overlap resolution by score.
-- Output GFF3, BED and a CENSOR-like table (fragment, class, identity, positions in the
-  reference family), plus masked FASTA and per-class base-pair summaries.
-- Run the structural detectors on unmatched long regions to flag possible novel elements.
+- [x] Input any FASTA: contigs, BACs, transcripts, or a single element (windowed searches).
+- [x] BLASTN against `refdb` and `--library` files, then BLASTX on unclaimed stretches (≥80 bits),
+      tandem runs and low complexity; bases claimed by score, losers keep their unclaimed pieces;
+      fragments of one reference chained into elements.
+- [x] Outputs: GFF3, BED, `annotate.tsv` (fragment, class, identity, reference positions), masked
+      FASTA, per-class summaries.
+- [x] Terminal-repeat pairs (TG..CA LTRs with a TSD, TIRs with a TSD or TA/TTAA ends) in long
+      unannotated stretches reported as unclassified candidate novel elements.
+- [x] dm6, two 2 Mb regions vs the UCSC RepeatMasker track: 94–98% of TE bases found, 99–100% same
+      class; Drosophila references held out: 50–83% found, 97–99% same class.
+- [ ] Moss test: a held-out moss genome region with refdb alone vs refdb plus the panel's curated
+      libraries (`--library`), against the RepeatMasker track.
+- [ ] Curated panel families into the refdb local layer (M1b curation workflow), so `--refdb`
+      alone covers bryophyte TEs.
 - Whole-genome masking stays with RepeatMasker in the full pipeline, using the same library.
 
 ### M7 – Validation and calibration (in progress)
